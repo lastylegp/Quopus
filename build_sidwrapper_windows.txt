@@ -1,0 +1,78 @@
+Building sidwrapper.dll on Windows
+==================================
+
+The sidwrapper.dll that ships with Quopus does NOT have the new
+sid_set_roms() function yet. Without it, RSIDs and KERNAL-using
+PSIDs play silence (or fail to load) because libsidplayfp can't
+boot the C64 ROMs.
+
+If you want SID playback that's on par with VICE, rebuild the DLL
+following these steps.
+
+Option A: MSYS2 (recommended, ~10 min)
+--------------------------------------
+1. Install MSYS2 from https://www.msys2.org
+2. Open the "MSYS2 MINGW64" shell (NOT the regular MSYS shell).
+3. Install the toolchain + libsidplayfp:
+
+       pacman -Syu
+       pacman -S mingw-w64-x86_64-toolchain \
+                  mingw-w64-x86_64-libsidplayfp
+
+4. cd to the Quopus folder, then:
+
+       g++ -O2 -shared sidwrapper.cpp \
+           -o sidwrapper.dll \
+           -lsidplayfp -lstdc++ \
+           -Wl,--out-implib,libsidwrapper.dll.a
+
+5. Verify the new function is exported:
+
+       nm sidwrapper.dll | grep sid_set_roms
+
+   Expect a "T sid_set_roms" line.
+
+6. Find these DLLs in C:\msys64\mingw64\bin and copy them next to
+   quopus.py (alongside your new sidwrapper.dll):
+
+       libsidplayfp-6.dll
+       libgcc_s_seh-1.dll
+       libstdc++-6.dll
+       libwinpthread-1.dll
+       libgcrypt-20.dll
+       libgpg-error-0.dll
+
+   The exact names may differ slightly between MSYS2 versions; just
+   copy whatever libsidplayfp-*.dll points to (use `ldd sidwrapper.dll`
+   inside MSYS2 shell to see the full list).
+
+Option B: keep the old DLL
+--------------------------
+If you don't want to rebuild, the old sidwrapper.dll keeps working
+exactly as before - the Python loader detects that sid_set_roms is
+not exported and just skips the ROM-injection step. So everything
+that worked previously still works; you just don't get the new
+RSID-playback ability. The header strip in the SID player will
+show "ROMs: missing".
+
+
+Where to put the C64 ROMs
+=========================
+After you have a sidwrapper.dll with sid_set_roms exported, drop
+the three C64 ROM files into one of these locations (Quopus
+auto-detects them in this order):
+
+    1. <dopus>\roms\                      <-- recommended
+    2. <dopus>\
+    3. C:\Program Files\WinVICE\C64\
+    4. C:\Program Files (x86)\WinVICE\C64\
+    5. C:\vice\C64\
+
+ROM files (any naming, matched by size):
+
+    KERNAL   8192 bytes   (e.g. kernal.901227-03.bin)
+    BASIC    8192 bytes   (e.g. basic.901226-01.bin)
+    CHARGEN  4096 bytes   (e.g. chargen.901225-01.bin)
+
+Easiest source: install VICE from sourceforge.net/projects/vice-emu/
+and copy the three .bin files out of its C64 subdirectory.
