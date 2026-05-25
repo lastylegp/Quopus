@@ -1302,6 +1302,67 @@ For built-in hotkeys whose handler isn't a simple `actions.dispatch(...)` call (
 
 **Button assignment mode:** right-click file → `Assign to button ►` → pick action → click target button. Right-click folder → `Assign '<name>' to action button...` for one-click `goto_dir`.
 
+### Custom modules (user plugins)
+
+Beyond the 80+ built-in actions, you can drop your own Python files into a `custom_modules/` folder and have them appear in the action picker as new buttons. Each plugin is a regular `.py` file with two requirements: an `ACTION_NAME` string at module level, and a `run(api)` function. Everything else (label, description, parameter hint) is optional metadata.
+
+**Where to put them.** Two directories are scanned, in this priority order:
+
+1. **`<exe-dir>/custom_modules/`** — portable / shipped alongside the application. Useful if you're distributing Quopus + a set of plugins as a bundle.
+2. **`<user-config-dir>/custom_modules/`** — your private modules. This is the default place for new plugins because it survives Quopus updates and lives in your normal config tree (`~/.config/quopus/custom_modules/` on Linux, `~/Library/Application Support/quopus/custom_modules/` on macOS, `%APPDATA%\quopus\custom_modules\` on Windows). The folder is created automatically with a quickstart `README.txt` on first run.
+
+If a module with the same `ACTION_NAME` exists in both directories, the user-config one wins.
+
+**Quickstart.** Pick `Config → Open custom modules folder` to land in your user directory. Create a new file like `my_action.py`:
+
+```python
+ACTION_NAME = "my_first_action"
+ACTION_LABEL = "Say Hello"
+ACTION_DESCRIPTION = "Greet the user and show selection details"
+
+def run(api):
+    api.notify("Hi", f"You selected {len(api.selected)} file(s)")
+```
+
+Then `Config → Reload custom modules` (no restart needed). Your action now appears under a new **"Custom Modules"** group in the action picker — right-click any button → pick it → bind it. The group is only shown when at least one module is loaded.
+
+**The `api` object** that gets passed into `run()` is a stable adapter so plugins don't need to import any Qt internals. It exposes:
+
+| Attribute / method | Returns / does |
+|---|---|
+| `api.src_path` | `Path` of the active panel's current directory |
+| `api.dst_path` | `Path` of the other panel's current directory |
+| `api.selected` | `list[Path]` of the highlighted files in the active panel |
+| `api.param` | `str` — the per-button "Param" field (set in the button editor) |
+| `api.config` | `dict` of Quopus's live runtime config (don't mutate unless you save it back) |
+| `api.parent_widget` | The main window — pass this as the parent for any `QDialog` you open |
+| `api.log(msg)` | Write to the Quopus status bar |
+| `api.refresh()` | Force a re-list of both panels (call after creating/moving/deleting files) |
+| `api.notify(title, body, kind='info'│'warn'│'error')` | Pop a `QMessageBox` |
+| `api.input(title, prompt, default='')` | Text-input dialog → `Optional[str]` (None on cancel) |
+| `api.ask_yes_no(title, body)` | Confirmation dialog → `bool` |
+| `api.pick_file(title, save=False, filters=...)` | Native file dialog → `Optional[Path]` |
+| `api.pick_dir(title)` | Native folder dialog → `Optional[Path]` |
+
+**Optional metadata** (any of these can be omitted; sensible defaults are derived from `ACTION_NAME`):
+
+```python
+ACTION_LABEL       = "My Action"        # shown in the picker and on the button
+ACTION_DESCRIPTION = "What it does"     # appears as a tooltip / status hint
+ACTION_PARAM_LABEL = "Folder name"      # placeholder text for the button-editor Param field
+```
+
+**File naming conventions.** Files whose names start with an underscore (`_helpers.py`, `_shared.py`) are treated as helper modules and **not** loaded as actions — use those for shared code that your real action modules import from. Plugin files are also identified by extension: only `.py` is scanned.
+
+**Reloading.** `Config → Reload custom modules` re-runs the discovery scan. It rebuilds the catalog from scratch, evicts the previously-loaded plugin modules from `sys.modules` so a Python re-import actually re-executes the file, and refreshes the button bank so cells bound to a custom action pick up changed labels and handlers. Modules that fail to load (syntax error, missing `ACTION_NAME`, missing `run()`) are reported as a list in a dialog so you can find and fix the typo without hunting through stderr.
+
+**Two sample modules** ship in `<exe-dir>/custom_modules/`:
+
+- **`example_hello.py`** — minimal "Hello, World" that shows how to read `api.selected` and `api.param`, and how to pop a `notify()` dialog. Use this as a starting point.
+- **`text_reader_sample.py`** — read-only text viewer for the file currently highlighted in the active panel. Demonstrates: lazy Qt imports inside `run()` to keep startup cheap, encoding fallback (UTF-8 → CP1252 → Latin-1), building a custom `QDialog` parented to Quopus's main window, `QShortcut`-based hotkeys (`Ctrl+F` find, `F3` find-next, `Escape` close), and `QFileDialog.getSaveFileName()` for "Save copy as..." with re-encoding to UTF-8.
+
+**Security note.** Custom modules execute in the same Python process as Quopus. They have the same filesystem and network privileges Quopus itself runs with — there is no sandboxing. Treat `custom_modules/` the way you'd treat `~/.bashrc`: only put code there that you wrote yourself or got from a source you trust. The first-run `README.txt` that Quopus drops into the folder repeats this warning so anyone you share your config tree with sees it too.
+
 ### Subprocess handling
 External programs (Run, Shell, External Script, Execute Command, file associations) are launched **fully detached**:
 - Quopus is never blocked
@@ -1578,6 +1639,8 @@ Quopus looks for these binaries in a fixed order: (1) explicit path in `quopus.c
 | `unrar` | RAR archive reading | WinRAR / unrar binary |
 
 Drop the binary into `<quopus>/external/` and Quopus picks it up on the next launch. No restart needed for viewers — the lookup happens each time you open a file. The directory contains a `README.txt` describing the convention.
+
+> **See also:** if `external_script` and `execute_command` aren't enough — e.g. you want a real Python function that pops dialogs, parses files, talks to APIs, then re-lists the panel — write it as a [custom module](#custom-modules-user-plugins) instead. Custom modules run in the Quopus process with full Qt access, get the active panel's selection passed in directly, and don't need any inter-process plumbing.
 
 ---
 
