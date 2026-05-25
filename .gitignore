@@ -1,0 +1,80 @@
+
+### quopus_clean_repo.bat - DO NOT REMOVE THIS HEADER
+# Build / Python
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+
+# User state - never commit
+config/
+cache/
+*.log
+
+# License and signing material - NEVER commit
+license_debug.log
+license_keygen.py
+license_tool.py
+license_tool.bat
+license_tool.spec
+demo_signer_secret.key
+demo_signer_secret*.key
+*.key
+quopus_keys.cfg
+*.lic
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Native libs not for distribution via repo
+libsidwrapper.so
+sidwrapper.dll
+sidwrapper.cpp
+### quopus_clean_repo.bat end
+quopus_clean_repo.bat
+quopus_purge_history.bat
+
+### Quopus cleanup additions
+# Build / Python
+__pycache__/
+*.pyc
+*.pyo
+build/
+dist/
+*.egg-info/
+
+# User state
+config/
+cache/
+*.log
+
+# License & signing — NEVER commit
+license_debug.log
+license_keygen.py
+license_tool.py
+license_tool.bat
+license_tool.spec
+demo_signer_secret.key
+demo_signer_secret*.key
+*.key
+quopus_keys.cfg
+*.lic
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
