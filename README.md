@@ -1024,15 +1024,40 @@ Each pick replaces the result list with the server's authoritative top-rated ent
 Top-level script that launches the U64 streamer **without Quopus**, using the same config (`~/.quopus/quopus.cfg`) — host, ports, password are read from there. Useful when integrating with a BBS or other process that wants to spy on the C64.
 
 ```cmd
-python quopus_streamer.py              # plain start, no auto-close
-python quopus_streamer.py BBS 0400 0   # start + auto-close watch
+python quopus_streamer.py                    # plain start, no auto-close
+python quopus_streamer.py --minimal          # kiosk mode (video-only, scale 4 = 768x544)
+python quopus_streamer.py --minimal=1        # kiosk at smallest size (192x136)
+python quopus_streamer.py --minimal=8        # kiosk at largest size (~FullHD 1920x1360)
+python quopus_streamer.py BBS 0400 0         # start + auto-close watch
+python quopus_streamer.py --minimal=4 BBS 0400 0   # combined: kiosk at 768x544 + auto-close
 ```
+
+**Minimal / kiosk mode** (`--minimal` or `--minimal=N` where N is 1..8): hides every UI element including the OS window decoration — titlebar, toolbar, host info, type-line, F-keys row, all buttons, AND the system-provided window frame. Only the raw C64 video frame is visible. Three mouse interactions:
+
+- **Left-click and drag anywhere in the picture** — moves the window. Since there is no titlebar, the picture IS the drag handle.
+- **Right-click anywhere in the picture** — pops a "Close Streamer?" Yes/No confirmation. The only way to dismiss the window via the mouse.
+- **Mouse-release at the end of a drag** — persists the new window position to `<config-dir>/u64_streamer_minimal_pos.json`. Next time you launch with `--minimal` the window appears at the same spot. The position is its own small file rather than inside `quopus.cfg` so writes on every drag don't churn through the much larger main config.
+
+The optional `=N` value picks the window size from a fixed table. The aspect ratio stays at the C64's 7:5 (1.41:1) at every step:
+
+| Scale | Window size | Note |
+|---|---|---|
+| `--minimal=1` | 192 × 136 | Half VIC-II, smallest sensible |
+| `--minimal=2` | 384 × 272 | Native VIC-II 1:1 |
+| `--minimal=3` | 576 × 408 | |
+| `--minimal=4` (or just `--minimal`) | 768 × 544 | Default |
+| `--minimal=5` | 960 × 680 | |
+| `--minimal=6` | 1152 × 816 | |
+| `--minimal=7` | 1536 × 1088 | |
+| `--minimal=8` | 1920 × 1360 | ~FullHD |
+
+Combined with a BBS auto-close watch the streamer becomes a kiosk-style live feed: positioned where you want at the size you want, no chrome, no accidental config-clicking, auto-dismissed on logout.
 
 **BBS mode** (3 args, first must be `BBS`): the streamer starts as normal and additionally polls the given address every 60 seconds. As soon as the byte equals the trigger value, the streamer window closes itself.
 
 Typical workflow:
-1. User logs in to BBS — BBS door spawns `python quopus_streamer.py BBS 0400 0` in the background
-2. Sysop sees the live C64 stream
+1. User logs in to BBS — BBS door spawns `python quopus_streamer.py --minimal BBS 0400 0` in the background
+2. Sysop sees the live C64 stream with no controls cluttering the view
 3. User logs out — BBS door writes `0` to `$0400`
 4. Within max 60 seconds the streamer notices and closes
 
@@ -1240,6 +1265,8 @@ Text-file conversion between ASCII and C64 PETSCII. Right-click → `ASCII ↔ P
 ### Internal FTP / FTPS / SFTP client
 Action `ftp` — connects and browses remote filesystems.
 
+> **See also**: [Quopus Drive](#quopus-drive-remote-machine-mount) for a custom client/server protocol that exposes folders on another machine with TLS + HMAC + MAC-based auth. Use FTP for talking to existing FTP servers (scene sites, web hosts, NAS appliances); use Quopus Drive when you control both ends and want stronger auth than FTP can provide.
+
 **Supported protocols:** FTP (port 21), FTPS explicit TLS (port 21), FTPS implicit TLS (port 990), SFTP (port 22, needs paramiko)
 
 **Connect dialog:** protocol picker, host, user, password, optional SSH private key for SFTP, save as named bookmark (max 30). The dialog has three buttons:
@@ -1258,6 +1285,90 @@ Passwords are NOT auto-persisted with bookmarks by default — they're prompted 
 **Bookmark from current FTP location:** while browsing a remote filesystem, right-click in the lister body and choose **"Add this FTP location as drive button"**. The FTP-bookmark dialog opens pre-populated with the active connection's host/port/user and current remote path - just confirm the label and save. Saves you the trouble of re-typing connection details for sites you reach via the dialog once and want to revisit later with one click.
 
 **Defensive host cleanup:** the `ftp_site` action strips common URL-prefix typos (`ftp://`, `ftps://`, `sftp://`, `http://`, `https://`) and trailing path components from the bookmark host before connecting, so `ftp://scene.org/pub` in the host field becomes just `scene.org`. Connection failures show a verbose error including host/port/user so you can spot configuration mistakes immediately.
+
+### Quopus Drive (remote machine mount)
+A custom client/server protocol for exposing arbitrary folders on another machine inside Quopus's normal dual-pane view, with stronger auth than plain FTP and zero dependency on SMB/NFS or commercial remote-desktop tools. Use it when you want to manage a sysop machine, a NAS, a development box, or your own desktop from another PC without poking SMB shares through every network.
+
+The remote side runs a small Python script (`qdrive_server/quopus_drive_server.py`, stdlib-only). Quopus then connects to it over **TLS 1.2+** with a self-signed server certificate that the client pins by SHA-256 fingerprint (no public CA, no MitM exposure). Authentication uses **HMAC-SHA256** with a per-client shared secret combined with the **MAC address of the client's physical LAN adapter** as a second factor - a stolen secret won't authenticate from a different machine because its MAC is not on the server's allowlist. Virtual adapters (VMware, VirtualBox, Hyper-V, Tailscale, WireGuard, Docker, loopback, ...) are automatically excluded from MAC enumeration on both sides.
+
+**Server-side setup** (on the remote PC):
+
+```
+python quopus_drive_server.py setup
+```
+
+The wizard walks you through:
+1. **Port + bind address** — default port is `2000`, bind defaults to `0.0.0.0` (all interfaces). Pick `127.0.0.1` if you only want local-only access (over an SSH tunnel for example).
+2. **TLS certificate** — auto-generated self-signed RSA 2048 cert valid for 10 years. The wizard prints the **SHA-256 fingerprint** which you paste into Quopus on the client side. Cert + key are stored under the server's user config dir (`~/.config/quopus_drive_server/` on Linux, `%APPDATA%\quopus_drive_server\` on Windows, `~/Library/Application Support/quopus_drive_server/` on macOS).
+3. **Exposed drives** — any number of directories, each with a short name and a read-only flag. Only paths you explicitly add show up to clients; the server enforces a whitelist with path canonicalization, so `../../etc/passwd`-style traversal attempts are rejected before touching the filesystem.
+4. **First client authorization** — pick a unique client name, enter the MAC address(es) of the client's physical LAN card(s), and the wizard generates a 256-bit random secret. The secret is printed once and never again - paste it into Quopus's bookmark immediately.
+
+To find the **client machine's MAC**, run on the Quopus client:
+
+```
+python quopus_drive_server.py whoami
+```
+
+This enumerates physical LAN cards on the local machine, filtering out the virtual adapters listed above, and prints each as `(interface_name, mac_address)`. Use one of those MACs in the server-side `setup` wizard. For a laptop that switches between Ethernet and Wi-Fi, register both MACs - the wizard accepts a list.
+
+**Running the server**:
+
+```
+python quopus_drive_server.py run
+```
+
+Stays in the foreground, logs every connect / authentication attempt / deny to stdout with the client's IP. Ctrl-C to stop. For unattended operation wrap it in a systemd unit (Linux), Windows Task Scheduler entry, or launchd plist (macOS) - the script intentionally doesn't fork or daemonize itself, the surrounding init system handles that better.
+
+**Other server commands**:
+
+| Command | Purpose |
+|---|---|
+| `info` | Full config dump: port, cert fingerprint, exposed drives, all clients and their authorized MACs |
+| `listclients` | Compact one-line-per-client listing |
+| `addclient` | Add another client (wizard) |
+| `delclient [name]` | Remove a client; the client's secret is wiped immediately. Confirmation requires typing `yes`, not just `y`, to prevent accidental clicks |
+| `addmac [client] [mac]` | Add another MAC to an existing client. MAC accepted in any format (colons, hyphens, no separators), normalized internally. Duplicates are silently skipped |
+| `adddrive` | Add another exposed directory after initial setup |
+| `deldrive [name]` | Stop exposing a directory (doesn't touch the files themselves) |
+| `whoami` | Print this machine's physical LAN MACs (useful when this machine will itself be a client of a different server) |
+
+Every command that writes to `server.json` (addclient, delclient, addmac, adddrive, deldrive) requires a server restart to take effect — Ctrl+C the running `run` command and start it again.
+
+**Client side** (in Quopus):
+
+Bind the action `qdrive` to any action button to open the Quopus Drive connect dialog. The dialog shows:
+- **Saved-bookmark list** at the top, with double-click to prefill the form
+- A connection form with fields for **Server host**, **Server port** (default 2000), **Client name**, **Shared secret** (password-masked), **Cert fingerprint**, and an optional **Force local MAC** field for cases where MAC autodetection picks the wrong adapter
+
+After filling in the form, **Save bookmark** persists it to `qdrive_bookmarks.json` in your Quopus config dir (with mode 600 where the OS supports it) and immediately offers to add it as a one-click action button - if you say yes, the cell-picker (with Main / Shift / Shift+Alt layer tabs) opens so you choose where to place it. **Connect** establishes the connection and mounts the chosen drive into the OTHER lister pane (same convention as FTP: source/active stays where you are, the remote drive lands in the destination panel).
+
+The mounted drive shows up in the lister exactly like FTP/SFTP — `[REMOTE]` prefix in the title, the right-click context menu offers `🔌 Disconnect Quopus Drive (back to local)`, and a red **Disconnect** button appears next to the path bar for one-click drop back to local filesystem. Double-click on a file downloads it to a session temp dir and opens it through the normal viewer dispatch (TextReader, image viewer, SID player, ...) — Quopus does NOT try to `Path.stat()` remote paths directly.
+
+**Direct-connect action `qdrive_site`**: takes a saved bookmark name as its `param`. Use this when you've created one-click reconnect buttons via the "Save as action button" prompt in the connect dialog. Click the button, Quopus reads the bookmark, performs the TLS + HMAC handshake, mounts the drive that the bookmark's `initial_drive` field names (or asks which drive if none is set). No dialog, no UI interaction.
+
+**Sicherheit honestly described** — defends against:
+- Passive eavesdropping (TLS 1.2+ encryption)
+- MitM with a forged certificate (SHA-256 pinning, no CA chain trust)
+- Replay attacks (server nonce + 30s timestamp window)
+- Stolen-secret-on-different-machine (MAC must also be on the allowlist)
+- Path traversal (server canonicalizes every path against the drive's whitelisted root before any filesystem access)
+
+Does **not** defend against:
+- An attacker on the same LAN segment who can sniff your MAC AND steal your secret. MAC spoofing is trivial - the MAC tie is a hardening layer, not a primary defense. Treat the secret like a password and rotate (`delclient` + `addclient`) if you suspect leakage.
+- Anyone with shell access on the server machine itself. The server runs with the privileges of the user who started it, so the exposed drives are already accessible to that user without any client.
+
+**Network setup hints**:
+- The server binds locally; **getting traffic to it from the internet is your responsibility**. Don't expose port 2000 directly to the open internet without a VPN layer.
+- The most robust setup is **Tailscale**, **WireGuard**, or **ZeroTier** between client and server: install on both machines, both pick up a `100.x.x.x` (Tailscale) or similar private address, point the client's bookmark `Server host` field at that address. No router port-forwarding, no DynDNS stress, end-to-end-encrypted on top of TLS, works on the road too.
+- If you do want direct-internet exposure (LAN-only port forwarding through one router is usually fine), set up a **DynDNS** alias for your home IP and configure your router to forward TCP/2000 to the server PC's LAN IP. **Double-NAT** setups (router behind router) need port-forwarding on both routers, which is fragile; prefer a VPN.
+
+**Sample protocol**:
+1. Server sends 32-byte random nonce + UTC timestamp
+2. Client computes `HMAC-SHA256(secret, nonce || timestamp || mac)` and sends it back along with the claimed MAC and client name
+3. Server verifies client name is known, MAC is on the allowlist for that name, timestamp is within ±30s of now, and the HMAC matches its own computation - all four must pass
+4. On success, server sends the list of allowed drives and the session is open. Commands are length-prefixed JSON over the TLS stream; file payloads use a separate length-prefixed binary frame after the command
+
+The protocol is intentionally simple and uses only well-known cryptographic primitives - the actual file-transfer code is < 1000 lines on each side.
 
 ### Drive-button column (left panel)
 A vertical scrollable list of up to 40 drive buttons - the second-from-left column with HOME/ROOT/TMP/etc. by default (auto-populated from the host OS as described in the OS-aware drives section above). Right-click any button for the full management menu:
@@ -1382,9 +1493,11 @@ External programs (Run, Shell, External Script, Execute Command, file associatio
 
 **Convert:** `petscii_convert` (interactive picker), `ascii_to_petscii` (direct), `petscii_to_ascii` (direct)
 
-**Nav/system:** `parent` (Backspace), `root` (Ctrl+\), `goto_dir`, `reread` (F2), `swap` (Ctrl+U), `back`, `forward`, `info` (Alt+Enter), `search` (Ctrl+S), `find` (Alt+F7), `run`, `shell`, `print`, `ftp` (Ctrl+F connect dialog), `ftp_site` (direct reconnect to a saved bookmark by name), `ftp_upload` (upload selected files to a saved bookmark), `buffers`, `dir_reverse`, `select_all` (Ctrl+A), `select_none`.
+**Nav/system:** `parent` (Backspace), `root` (Ctrl+\), `goto_dir`, `reread` (F2), `swap` (Ctrl+U), `back`, `forward`, `info` (Alt+Enter), `search` (Ctrl+S), `find` (Alt+F7), `run`, `shell`, `print`, `ftp` (Ctrl+F connect dialog), `ftp_site` (direct reconnect to a saved bookmark by name), `ftp_upload` (upload selected files to a saved bookmark), `qdrive` (Quopus Drive connect dialog), `qdrive_site` (direct reconnect to a saved Quopus Drive bookmark), `buffers`, `dir_reverse`, `select_all` (Ctrl+A), `select_none`.
 
 `ftp` opens the connect dialog; `ftp_site` is the direct-connect variant that takes a saved bookmark name as its `param` and connects without any UI - useful for one-click reconnect to a frequently-used server. `ftp_upload` skips the browser and directly uploads tagged/selected files to a named bookmark's `path` - useful for "publish to my BBS dropzone" buttons.
+
+`qdrive` and `qdrive_site` work the same way for [Quopus Drive](#quopus-drive-remote-machine-mount) — a custom-protocol equivalent of FTP that talks to a Python server you run on the remote machine, with TLS + HMAC + MAC-binding auth. `qdrive` opens a connect dialog with the saved-bookmark list and a new-connection form; `qdrive_site` takes a bookmark name as its `param` and connects in one click. After connect, the bookmark's `initial_drive` is used if set, otherwise Quopus asks which of the server's exposed drives to mount in the target lister pane.
 
 **Custom:** `external_script`, `execute_command`, `custom_cmd`
 
