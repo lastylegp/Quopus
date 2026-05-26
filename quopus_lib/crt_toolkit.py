@@ -247,26 +247,45 @@ CRT_TYPES = {
           "Hard-drive host adaptor cart."),
     73:  ("RAMLink",        "RAMLink",
           "CMD RAM expansion cart."),
-    74:  ("H.E.R.O.",      "H.E.R.O.",
-          "Game cart - uses a custom mapper."),
+    74:  ("Drean",          "Drean",
+          "Argentine C64 clone cart. Drean was the South American "
+          "Commodore distributor that produced a PAL-N variant of "
+          "the C64 - some Drean-only carts use a slightly different "
+          "bank-switching scheme that ID 74 covers."),
     75:  ("IEEE Flash 64", "IEEE Flash! 64",
-          "IEEE-488 + Flash combo cart."),
-    76:  ("Turtle Graphics II", "Turtle Graphics II",
+          "IEEE-488 interface + Flash combo cart for CBM disk "
+          "drives."),
+    76:  ("Turtle Gfx II", "Turtle Graphics II",
           "Educational graphics cart."),
     77:  ("Freeze Frame MK2", "Freeze Frame MK2",
           "Updated Freeze Frame freezer."),
     78:  ("Partner 64",    "Partner 64",
           "Productivity cart."),
     79:  ("Hyper-BASIC",   "Hyper-BASIC",
-          "BASIC extension cart."),
-    80:  ("Universal Cart","Universal Cartridge",
-          "Generic flash-rewritable cart."),
-    81:  ("DREAN",          "DREAN",
-          "Argentine game-compilation cart."),
-    82:  ("Game System",    "Game System",
-          "Multi-game cart, up to 1 MiB."),
-    83:  ("Practicalc II", "Practicalc II",
-          "Spreadsheet cart, 64 KiB."),
+          "BASIC extension cart. Note: ID 79 was historically also "
+          "used by some older Magic Desk 2 carts before MD2 was "
+          "assigned its own ID 85; modern emulators detect MD2 by "
+          "ROM size > 1 MB to disambiguate."),
+    80:  ("Univ Cart 1",   "Universal Cartridge 1",
+          "First version of the Universal Cartridge generic "
+          "flash-rewritable platform."),
+    81:  ("Univ Cart 1.5", "Universal Cartridge 1.5",
+          "Revision 1.5 of the Universal Cartridge."),
+    82:  ("Univ Cart 2",   "Universal Cartridge 2",
+          "Second-generation Universal Cartridge."),
+    83:  ("BMP Data Turbo","BMP Data Turbo 2000",
+          "Data-transfer cart."),
+    84:  ("Profi-DOS",     "Profi-DOS",
+          "DOS/utility cart."),
+    85:  ("Magic Desk 16", "Magic Desk 16",
+          "Magic Desk variant with up to 16 MiB Flash. Also known "
+          "as MD2 - some older CRTs use ID 79 for the same "
+          "hardware, see notes there. Used by Denise emulator and "
+          "modern multi-game compilation carts."),
+    86:  ("Megabyter",     "Protovision \"Megabyter\"",
+          "Protovision's Protocart One platform - the host cart "
+          "for non-GMod2 Protovision releases like A Pig Quest "
+          "and Lykia."),
 }
 
 # Cartridge sub-type / revision table (CRT v2.0+, header offset $1A).
