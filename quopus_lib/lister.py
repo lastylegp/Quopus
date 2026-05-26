@@ -345,6 +345,21 @@ class FileLister(QWidget):
         self.path_edit.returnPressed.connect(self._on_path_entered)
         self.path_edit.installEventFilter(self)
         nav_row.addWidget(self.path_edit, 1)
+        # Disconnect button: only visible when the lister is in
+        # remote mode (FTP or Quopus Drive). One-click way to
+        # drop back to the local filesystem without diving into
+        # the right-click menu. Hidden by default; toggled by
+        # refresh() / set_remote_fs() / disconnect_remote().
+        self.btn_disconnect = QPushButton("Disconnect")
+        self.btn_disconnect.setStyleSheet(button_qss("red"))
+        self.btn_disconnect.setFixedWidth(82)
+        self.btn_disconnect.setToolTip(
+            "Disconnect from the remote filesystem and return "
+            "to the local view")
+        self.btn_disconnect.clicked.connect(
+            lambda: self.disconnect_remote(confirm=True))
+        self.btn_disconnect.hide()
+        nav_row.addWidget(self.btn_disconnect)
         wrap_nav = QWidget(); wrap_nav.setLayout(nav_row)
         outer.addWidget(wrap_nav)
 
@@ -900,8 +915,18 @@ class FileLister(QWidget):
         self.path_edit.setText(self.fs.display_path())
         if self.fs.kind == 'remote':
             self.title.setText(f" {self.side_label}:  [REMOTE]  {self.fs.display_path()} ")
+            # Show disconnect button + adapt tooltip to remote kind
+            label_hint = getattr(self.fs, 'label', '') or ''
+            if label_hint.startswith('qdrive://'):
+                self.btn_disconnect.setToolTip(
+                    f"Disconnect Quopus Drive\n({label_hint})")
+            else:
+                self.btn_disconnect.setToolTip(
+                    f"Disconnect FTP\n({label_hint or 'remote'})")
+            self.btn_disconnect.show()
         else:
             self.title.setText(f" {self.side_label}: {self.current_path} ")
+            self.btn_disconnect.hide()
 
         entries = []
         total_size = 0
@@ -1228,8 +1253,15 @@ class FileLister(QWidget):
             return
         if confirm:
             label = self.fs.label if hasattr(self.fs, 'label') else ''
+            # Title adapts to the remote-backend kind so the
+            # dialog isn't misleading - QDrive mounts say
+            # "Disconnect Quopus Drive", FTP says "Disconnect FTP".
+            if label.startswith('qdrive://'):
+                disc_title = "Disconnect Quopus Drive"
+            else:
+                disc_title = "Disconnect FTP"
             reply = QMessageBox.question(
-                self, "Disconnect FTP",
+                self, disc_title,
                 f"Disconnect from {label} and return to local filesystem?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.Yes,
@@ -1362,6 +1394,150 @@ class FileLister(QWidget):
             QMessageBox.warning(self, "FTP", "Action dispatcher not available.")
             return
         actions._save_ftp_as_action_button(kw)
+
+    # ------------------------------------------------------------------
+    # Quopus Drive variants of the FTP "save current state" helpers.
+    # We can't share the FTP code 1:1 because:
+    #   - QDrive bookmarks live in qdrive_bookmarks.json (loaded via
+    #     qdrive_backend.load_bookmarks()), not in cfg['ftp_bookmarks']
+    #   - The action that one-click-reconnects is 'qdrive_site', not
+    #     'ftp_site'
+    #   - The lister's fs.label for a QDrive mount is the qdrive://
+    #     URL, not the bookmark name - we have to match it back to a
+    #     saved bookmark by host+initial_drive
+    # The cell-picker for placing the button on the grid is the same
+    # one FTP uses (actions._save_ftp_as_action_button), which has
+    # been generalized to accept 'qdrive_site' as a valid action_kind.
+    # ------------------------------------------------------------------
+    def _qdrive_find_active_bookmark(self):
+        """Find the QDrive bookmark matching the currently mounted
+        connection. Returns the QDriveBookmark or None if none
+        matches (e.g. the user connected via the dialog without
+        clicking 'Save Bookmark').
+
+        Matching is on host + drive: a bookmark wins if its
+        bookmark.host equals the current connection's host and
+        bookmark.initial_drive matches the current drive name (or
+        is empty - meaning "any drive on this host" which is fine
+        as a fuzzy match).
+        """
+        if self.fs.kind != 'remote':
+            return None
+        label_hint = getattr(self.fs, 'label', '') or ''
+        if not label_hint.startswith('qdrive://'):
+            return None
+        # Parse "qdrive://host/drive"
+        try:
+            tail = label_hint[len('qdrive://'):]
+            host, _, drive = tail.partition('/')
+        except Exception:
+            return None
+        if not host:
+            return None
+        # Also pull the connection object if accessible - more
+        # reliable for client_name matching when host is e.g. an
+        # IP that differs between two bookmarks.
+        conn = getattr(self.fs, '_conn', None)
+        active_client = (conn.bookmark.client_name
+                         if conn is not None else None)
+        try:
+            from . import qdrive_backend as qd
+            all_bms = qd.load_bookmarks()
+        except Exception:
+            return None
+        # Prefer exact match: host + drive + client_name
+        best = None
+        for bm in all_bms:
+            if bm.host != host:
+                continue
+            # client_name is the strongest disambiguator if we
+            # have it
+            if active_client and bm.client_name != active_client:
+                continue
+            if bm.initial_drive and drive and \
+                    bm.initial_drive != drive:
+                continue
+            best = bm
+            # If exact drive match, return immediately
+            if bm.initial_drive == drive:
+                return bm
+        return best
+
+    def _qdrive_save_cwd_to_bookmark(self, bookmark, pwd):
+        """Persist the current remote directory and drive into the
+        QDrive bookmark so future qdrive_site connects land here
+        directly. Also pins initial_drive so the drive picker
+        dialog is skipped next time."""
+        # Figure out the current drive from the lister's label
+        try:
+            label_hint = getattr(self.fs, 'label', '') or ''
+            tail = label_hint[len('qdrive://'):]
+            _host, _, current_drive = tail.partition('/')
+        except Exception:
+            current_drive = bookmark.initial_drive
+        # Modify the stored bookmark in place and persist the
+        # whole list. Both fields - initial_drive and
+        # initial_path - are part of the official dataclass now,
+        # so this is a straight save_bookmarks() round-trip.
+        from . import qdrive_backend as qd
+        bms = qd.load_bookmarks()
+        updated = False
+        for bm in bms:
+            if bm.name == bookmark.name:
+                bm.initial_drive = (current_drive
+                                     or bm.initial_drive)
+                bm.initial_path = pwd or "/"
+                updated = True
+                break
+        if not updated:
+            QMessageBox.warning(
+                self, "Quopus Drive bookmark",
+                f"Could not find bookmark "
+                f"'{bookmark.name}' in qdrive_bookmarks.json "
+                f"- nothing saved.")
+            return
+        qd.save_bookmarks(bms)
+        QMessageBox.information(
+            self, "Quopus Drive bookmark",
+            f"Saved current drive '{current_drive}' and path "
+            f"'{pwd}' as defaults for bookmark "
+            f"'{bookmark.name}'.\n\n"
+            f"Next time you click the qdrive_site button you "
+            f"will land here directly.")
+
+    def _qdrive_add_as_action_button(self, bookmark):
+        """Add the active QDrive connection's bookmark as a
+        one-click action button. Uses the shared cell-picker on
+        the action dispatcher - same UI as FTP, just with
+        'qdrive_site' as the action_kind so a button click
+        triggers QDrive's connect handler, not FTP's."""
+        try:
+            actions = self.window().actions
+        except AttributeError:
+            QMessageBox.warning(
+                self, "Quopus Drive",
+                "Action dispatcher not available.")
+            return
+        kw = {
+            'name':         bookmark.name,
+            'action_kind':  'qdrive_site',
+            'action_label': bookmark.name,
+        }
+        actions._save_ftp_as_action_button(kw)
+
+    def _open_qdrive_dialog(self):
+        """Open the Quopus Drive connect dialog. Used by the
+        right-click hint when the user is on an active QDrive
+        connection but didn't save it as a bookmark - they need
+        to hit Save Bookmark before we can place it on a
+        button."""
+        try:
+            actions = self.window().actions
+            actions.dispatch('qdrive', param=None)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Quopus Drive",
+                f"Could not open the connect dialog: {e}")
 
     # ------------------------------------------------------------------
 
@@ -1654,39 +1830,77 @@ class FileLister(QWidget):
         """)
         idx = self.view.indexAt(pos)
 
-        # If remote mode, offer Disconnect FTP prominently at the top
+        # If remote mode, offer Disconnect prominently at the top.
+        # The label adapts to which kind of remote backend is
+        # mounted (FTP vs Quopus Drive) by inspecting the fs
+        # label - QDriveFs uses "qdrive://..." as its label, the
+        # FTP backend uses bookmark names or "ftp://...".
         if self.fs.kind == 'remote':
-            a_disc = menu.addAction("🔌 Disconnect FTP  (back to local)",
+            label_hint = getattr(self.fs, 'label', '') or ''
+            is_qdrive = label_hint.startswith('qdrive://')
+            if is_qdrive:
+                disc_text = "🔌 Disconnect Quopus Drive  (back to local)"
+            else:
+                disc_text = "🔌 Disconnect FTP  (back to local)"
+            a_disc = menu.addAction(disc_text,
                                      self.disconnect_remote)
             # Make the disconnect entry visually stand out
             font = a_disc.font(); font.setBold(True); a_disc.setFont(font)
             menu.addSeparator()
-            # ----- Save-current-FTP-state shortcuts -----
-            # The connection label set by set_remote_fs() is the
-            # bookmark name (when connected via ftp_site / ftp_upload
-            # / a saved bookmark). If the user is on an ad-hoc
-            # connection without a saved bookmark, these entries
-            # still appear but show a hint when clicked.
-            cur_label = getattr(self.fs, 'label', None) or '?'
+            # ----- Save-current-remote-state shortcuts -----
+            cur_label = label_hint or '?'
             try:
                 cur_pwd = self.fs.pwd() or '/'
             except Exception:
                 cur_pwd = '/'
-            menu.addAction(
-                f"💾 Save current dir as default for '{cur_label}'  "
-                f"({cur_pwd})",
-                lambda lbl=cur_label, p=cur_pwd:
-                    self._ftp_save_cwd_to_bookmark(lbl, p))
-            menu.addAction(
-                f"➕ Add as action button (connect to '{cur_label}')",
-                lambda lbl=cur_label:
-                    self._ftp_add_as_action_button(lbl, 'ftp_site'))
-            menu.addAction(
-                f"⬆ Add as upload action button "
-                f"(upload to '{cur_label}' : {cur_pwd})",
-                lambda lbl=cur_label, p=cur_pwd:
-                    self._ftp_add_as_action_button(
-                        lbl, 'ftp_upload', save_cwd=p))
+            if is_qdrive:
+                # Quopus Drive path: find the matching bookmark
+                # in qdrive_bookmarks.json by host+drive.
+                # The label is "qdrive://<host>/<drive>" - we
+                # parse it back out and look the bookmark up.
+                qd_bm = self._qdrive_find_active_bookmark()
+                if qd_bm is not None:
+                    bm_name = qd_bm.name
+                    menu.addAction(
+                        f"💾 Save current dir as default for "
+                        f"'{bm_name}'  ({cur_pwd})",
+                        lambda b=qd_bm, p=cur_pwd:
+                            self._qdrive_save_cwd_to_bookmark(b, p))
+                    menu.addAction(
+                        f"➕ Add as action button (connect to "
+                        f"'{bm_name}')",
+                        lambda b=qd_bm:
+                            self._qdrive_add_as_action_button(b))
+                else:
+                    # Active connection but no matching saved
+                    # bookmark - tell the user how to fix.
+                    a = menu.addAction(
+                        f"➕ Add as action button  "
+                        f"(no saved bookmark yet)")
+                    a.setEnabled(False)
+                    menu.addAction(
+                        "💡 Open Quopus Drive dialog to save "
+                        "this as a bookmark first",
+                        lambda: self._open_qdrive_dialog())
+            else:
+                # Classic FTP path
+                menu.addAction(
+                    f"💾 Save current dir as default for "
+                    f"'{cur_label}'  ({cur_pwd})",
+                    lambda lbl=cur_label, p=cur_pwd:
+                        self._ftp_save_cwd_to_bookmark(lbl, p))
+                menu.addAction(
+                    f"➕ Add as action button (connect to "
+                    f"'{cur_label}')",
+                    lambda lbl=cur_label:
+                        self._ftp_add_as_action_button(
+                            lbl, 'ftp_site'))
+                menu.addAction(
+                    f"⬆ Add as upload action button "
+                    f"(upload to '{cur_label}' : {cur_pwd})",
+                    lambda lbl=cur_label, p=cur_pwd:
+                        self._ftp_add_as_action_button(
+                            lbl, 'ftp_upload', save_cwd=p))
             menu.addSeparator()
         elif self.fs.kind == 'search':
             a_close = menu.addAction(

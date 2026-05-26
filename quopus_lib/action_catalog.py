@@ -113,6 +113,8 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("ftp_site",     "FTP site (direct connect to bookmark)"),
         ("ftp_upload",   "FTP upload (upload selection from other panel)"),
         ("telnet",       "Telnet / SSH / Raw TCP client"),
+        ("qdrive",       "Quopus Drive connect (open dialog)"),
+        ("qdrive_site",  "Quopus Drive site (direct connect to bookmark)"),
         ("database",     "Quopus Database (catalog and search archives)"),
     ]),
     ("Cloud storage", [
@@ -143,23 +145,60 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
 ]
 
 
+def _custom_modules_group() -> tuple[str, list[tuple[str, str]]]:
+    """Build the Custom Modules group from the live registry.
+    Returns an empty list of items when no modules are loaded,
+    so callers can drop the group entirely if they want."""
+    try:
+        from . import custom_modules
+        items = [(m.action_name, m.label)
+                 for m in custom_modules.all_modules()]
+    except Exception:
+        items = []
+    return ("Custom Modules", items)
+
+
+def get_action_groups(include_custom: bool = True
+                       ) -> list[tuple[str, list[tuple[str, str]]]]:
+    """Return the catalog as a list of (group_name, items) pairs.
+
+    With include_custom=True (the default) we append a
+    "Custom Modules" group built dynamically from the
+    custom_modules registry. Both editors (right-click and F10)
+    call us with include_custom=True so user-installed actions
+    appear right next to the built-ins.
+
+    The Custom Modules group is OMITTED entirely when there are
+    no loaded modules - the user shouldn't see an empty submenu
+    in the picker. Once they drop a file into custom_modules/
+    and pick "Reload custom modules", the group appears.
+    """
+    groups = list(ACTION_GROUPS)
+    if include_custom:
+        cm_group = _custom_modules_group()
+        if cm_group[1]:                     # only if non-empty
+            groups.append(cm_group)
+    return groups
+
+
 def flat_action_keys() -> list[str]:
     """Return all action keys in catalog order (groups concatenated).
     Used by the F10 → Action buttons dialog when populating the
     legacy ComboBox path; ensures the dropdown order matches the
     right-click submenu order so users don't see two different
-    sortings."""
+    sortings. Includes custom-module actions if any are loaded."""
     out = []
-    for _grp, items in ACTION_GROUPS:
+    for _grp, items in get_action_groups(include_custom=True):
         for key, _label in items:
             out.append(key)
     return out
 
 
 def action_label_map() -> dict[str, str]:
-    """Return {key: human_label} for every catalog entry."""
+    """Return {key: human_label} for every catalog entry,
+    including custom-module entries."""
     out = {}
-    for _grp, items in ACTION_GROUPS:
+    for _grp, items in get_action_groups(include_custom=True):
         for key, label in items:
             out[key] = label
     return out
@@ -249,7 +288,7 @@ def build_action_picker_button(parent, current_key: str,
         act.triggered.connect(_make_handler(""))
         menu.addSeparator()
 
-    for grp_name, items in ACTION_GROUPS:
+    for grp_name, items in get_action_groups(include_custom=True):
         sub = menu.addMenu(grp_name)
         sub.setStyleSheet(menu.styleSheet())
         for key, label in items:

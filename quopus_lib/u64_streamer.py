@@ -7295,6 +7295,266 @@ class U64Streamer(QDialog):
                         self.btn_cinema)
                     self.btn_cinema.show()
 
+    # Explicit window-size table for --minimal=N. Stepped at
+    # 192 px width / 136 px height (the half-VIC-II frame) for
+    # N=1..6, then two bigger jumps (×8, ×10 of the base step)
+    # to give the user useful jumps at the top end up to ~FullHD
+    # without spamming a dozen near-identical entries. Width:
+    # height ratio stays at the C64's 7:5 (1.41:1) everywhere.
+    _MINIMAL_SIZES = {
+        1: ( 192,  136),
+        2: ( 384,  272),
+        3: ( 576,  408),
+        4: ( 768,  544),
+        5: ( 960,  680),
+        6: (1152,  816),
+        7: (1536, 1088),
+        8: (1920, 1360),
+    }
+
+    def enter_minimal_mode(self, scale: int = None) -> None:
+        """Enter a minimal display-only mode: every UI chrome
+        element AND the OS window decoration is hidden. Only the
+        raw video frame is visible. The user can:
+          - LEFT-click anywhere in the picture and drag to move
+            the window (since there is no titlebar)
+          - RIGHT-click anywhere to get a "Close streamer?" Yes/No
+            confirmation
+
+        `scale` (1..8) picks the window size from a fixed table:
+          1 ->  192 x  136   (half VIC-II, smallest sensible)
+          2 ->  384 x  272   (native VIC-II 1:1)
+          3 ->  576 x  408
+          4 ->  768 x  544   (default - the old "scale 2" pixel size)
+          5 ->  960 x  680
+          6 -> 1152 x  816
+          7 -> 1536 x 1088
+          8 -> 1920 x 1360   (~FullHD - widest sensible)
+        If None, scale 4 (768x544) is used. Values outside 1..8
+        are clamped to the range.
+
+        The window position is persisted across launches in
+        u64_streamer_minimal_pos.json under the Quopus config
+        dir. Next time the streamer is launched with --minimal
+        it lands at the same spot.
+
+        Used by the standalone streamer's --minimal command-line
+        flag for BBS-style "kiosk" displays where the user
+        should not see any chrome.
+        """
+        from PyQt6.QtCore import Qt, QTimer, QPoint
+        from PyQt6.QtWidgets import QFrame
+        # Resolve the requested scale to a (w, h) pair from the
+        # explicit lookup table. Values outside 1..8 clamp to
+        # the closest valid entry. None -> default 4 (768x544).
+        if scale is None:
+            scale = 4
+        scale = max(1, min(8, int(scale)))
+        video_w, video_h = self._MINIMAL_SIZES[scale]
+        # The internal self._scale attribute is used by the
+        # frame renderer for QPixmap sizing. We can't directly
+        # use the lookup-table sizes (they're not all integer
+        # multiples of FRAME_W=384), so we pick the closest
+        # integer multiplier the renderer can handle. The
+        # KeepAspectRatio scaler in _refresh_video_widget will
+        # do the final fit-to-label scaling anyway, so this
+        # mostly affects render quality, not correctness.
+        self._scale = max(1, round(video_w / FRAME_W))
+        # Hide every chrome widget
+        for w in self._chrome_widgets:
+            try:
+                w.setVisible(False)
+            except Exception:
+                pass
+        try:
+            self.btn_cinema.hide()
+        except Exception:
+            pass
+        self._minimal_mode = True
+        # Layout cleanup: no margins, no spacing - the picture
+        # fills the window edge-to-edge.
+        try:
+            self.layout().setContentsMargins(0, 0, 0, 0)
+            self.layout().setSpacing(0)
+        except Exception:
+            pass
+        # The video QLabel sits inside a QFrame with StyledPanel
+        # shape - that draws a 1-2 px border around the picture.
+        # In minimal mode we don't want a border (the whole point
+        # is "just the picture"), so we walk up from video_label
+        # to find that frame and turn its border off.
+        try:
+            parent = self.video_label.parent()
+            if isinstance(parent, QFrame):
+                parent.setFrameShape(QFrame.Shape.NoFrame)
+                # Inner layout margins on the frame too
+                inner_layout = parent.layout()
+                if inner_layout is not None:
+                    inner_layout.setContentsMargins(0, 0, 0, 0)
+                    inner_layout.setSpacing(0)
+        except Exception:
+            pass
+        # Drop the label's minimum-size constraint so resize()
+        # to exactly video_w x video_h doesn't get rejected by
+        # the layout system. The constraint was there to keep
+        # the chrome usable when the window is dragged tiny;
+        # in minimal mode there is no chrome to protect.
+        try:
+            self.video_label.setMinimumSize(0, 0)
+        except Exception:
+            pass
+        # Persistent drag state - set by mousePressEvent when
+        # the user starts dragging the picture.
+        self._minimal_drag_offset = None
+
+        # --- Frameless window with draggable picture ----------
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint,
+                            True)
+
+        # --- Restore saved position from cfg if available -----
+        saved_pos = self._load_minimal_position()
+
+        # Defer all the geometry tweaks - Qt processes the
+        # setVisible(False) calls + the window-flag change
+        # asynchronously, and a synchronous resize/move here
+        # gets overridden by a late layout pass.
+        def _apply_geometry():
+            # setFixedSize is stronger than resize() - it both
+            # resizes AND prevents Qt's layout from snapping
+            # the window back to its sizeHint (which is what was
+            # causing the black borders, since the dialog's
+            # sizeHint with our hidden chrome was wider than
+            # the picture-only target size).
+            self.setFixedSize(video_w, video_h)
+            if saved_pos is not None:
+                self.move(saved_pos[0], saved_pos[1])
+            # show() is required after toggling FramelessWindowHint
+            # for the change to take effect on Win/X11.
+            self.show()
+            # Force one more video repaint at the new label size
+            # so the picture re-scales to fill the now-shrunk
+            # window. Without this the picture stays at its old
+            # smaller render until the next frame arrives.
+            try:
+                self._refresh_video_widget()
+            except Exception:
+                pass
+        QTimer.singleShot(0, _apply_geometry)
+
+    # --- Saved-position helpers (minimal mode only) -------------
+    def _minimal_position_path(self):
+        """Where the saved position lives. Same config dir as
+        Quopus itself, in a small dedicated file so we don't
+        have to load and rewrite the whole quopus.cfg every
+        time the user drags the window."""
+        try:
+            from .config import CONFIG_DIR
+            from pathlib import Path
+            return Path(CONFIG_DIR) / "u64_streamer_minimal_pos.json"
+        except Exception:
+            from pathlib import Path
+            return Path.home() / ".u64_streamer_minimal_pos.json"
+
+    def _load_minimal_position(self):
+        """Return [x, y] from the saved-position file, or None
+        if no saved position exists or the file is unreadable."""
+        import json
+        p = self._minimal_position_path()
+        if not p.is_file():
+            return None
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+            x = int(data.get("x"))
+            y = int(data.get("y"))
+            return (x, y)
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+
+    def _save_minimal_position(self):
+        """Persist the current window position to the saved-
+        position file. Called from mouseReleaseEvent at the end
+        of a drag - we don't write on every mouseMove because
+        that would hammer the disk."""
+        import json
+        p = self._minimal_position_path()
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            pos = self.pos()
+            p.write_text(
+                json.dumps({"x": pos.x(), "y": pos.y()}),
+                encoding="utf-8")
+        except OSError:
+            pass
+
+    # --- Mouse-drag support (minimal mode only) ------------------
+    def mousePressEvent(self, ev):
+        """Start a window-drag when the user left-clicks in
+        minimal mode. In other modes mouse press has its normal
+        behavior (focus widget, etc) - we only intercept when
+        _minimal_mode is True."""
+        from PyQt6.QtCore import Qt
+        if (getattr(self, '_minimal_mode', False)
+                and ev.button() == Qt.MouseButton.LeftButton):
+            # Remember the offset from the window's top-left
+            # corner to the click point - we keep this constant
+            # during drag so the window follows the cursor
+            # without "jumping" to align corner to pointer.
+            self._minimal_drag_offset = (
+                ev.globalPosition().toPoint() - self.pos())
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
+
+    def mouseMoveEvent(self, ev):
+        """Continue a window-drag while the left button is held
+        and we're in minimal mode."""
+        from PyQt6.QtCore import Qt
+        if (getattr(self, '_minimal_mode', False)
+                and self._minimal_drag_offset is not None
+                and (ev.buttons() & Qt.MouseButton.LeftButton)):
+            new_pos = (ev.globalPosition().toPoint()
+                       - self._minimal_drag_offset)
+            self.move(new_pos)
+            ev.accept()
+            return
+        super().mouseMoveEvent(ev)
+
+    def mouseReleaseEvent(self, ev):
+        """Finish a window-drag and persist the new position."""
+        from PyQt6.QtCore import Qt
+        if (getattr(self, '_minimal_mode', False)
+                and self._minimal_drag_offset is not None
+                and ev.button() == Qt.MouseButton.LeftButton):
+            self._minimal_drag_offset = None
+            self._save_minimal_position()
+            ev.accept()
+            return
+        super().mouseReleaseEvent(ev)
+
+    def contextMenuEvent(self, ev):
+        """Right-click anywhere in the window.
+
+        In minimal mode (set by enter_minimal_mode), pop a
+        "Close streamer?" Yes/No confirmation. Yes closes the
+        window, No simply dismisses the popup. In any other
+        mode the event falls through to Qt's default (which is
+        a no-op for QDialog - none of the chrome widgets handle
+        a context menu either).
+        """
+        if not getattr(self, '_minimal_mode', False):
+            super().contextMenuEvent(ev)
+            return
+        from PyQt6.QtWidgets import QMessageBox
+        reply = QMessageBox.question(
+            self, "Close Streamer?",
+            "Close the U64 streamer?",
+            QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.close()
+        ev.accept()
+
     def _on_ontop_toggle(self, checked: bool):
         """Toggle Qt's WindowStaysOnTopHint at runtime."""
         self._always_on_top = checked

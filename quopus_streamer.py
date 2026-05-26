@@ -15,6 +15,31 @@ Aufruf:
         Streamer starten, kein Auto-Close. Wie 'U64 streamer' in Quopus,
         nur ohne Quopus-Fenster.
 
+    python quopus_streamer.py --minimal
+        Streamer im "Kiosk"-Mode starten: nur das Video-Bild, KEINE
+        Buttons, Toolbar, Hostzeile, F-Tasten-Reihe, KEINE OS-
+        Titelzeile. Linksklick im Bild + ziehen verschiebt das
+        Fenster (Picture = Drag-Handle, weil keine Titelzeile da).
+        Rechtsklick irgendwo im Fenster oeffnet "Close Streamer?"
+        Yes/No. Position wird in CONFIG_DIR/u64_streamer_minimal_pos.json
+        gespeichert sobald die Maustaste losgelassen wird - beim
+        naechsten --minimal-Start landet das Fenster an derselben
+        Stelle. Default-Skalierung: 2x (768x544).
+
+    python quopus_streamer.py --minimal=N
+        Wie --minimal, aber mit explizitem Skalierungsfaktor N
+        (1..8) aus dieser Tabelle:
+          --minimal=1      192 x  136   (Halb-VIC-II, kleinste sinnvolle)
+          --minimal=2      384 x  272   (native VIC-II 1:1)
+          --minimal=3      576 x  408
+          --minimal=4      768 x  544   (Default)
+          --minimal=5      960 x  680
+          --minimal=6     1152 x  816
+          --minimal=7     1536 x 1088
+          --minimal=8     1920 x 1360   (~FullHD)
+        Bequem fuer BBS-Doors die einen bestimmten Platz auf
+        einem Multi-Monitor-Setup nutzen wollen.
+
     python quopus_streamer.py BBS WATCH_ADDR WATCH_VALUE
         Streamer starten, plus alle 60 Sekunden WATCH_ADDR pollen.
         Sobald das Byte dort gleich WATCH_VALUE ist, Fenster schliessen.
@@ -24,6 +49,9 @@ Aufruf:
 
         Pollt $0400; sobald da $00 steht (etwa weil das BBS-Door
         beim Logout dorthin eine 0 schreibt), endet der Streamer.
+
+    python quopus_streamer.py --minimal BBS 0400 0
+        Beides kombinierbar - Kiosk-Mode plus Auto-Close-Watch.
 
 WATCH_ADDR und WATCH_VALUE akzeptieren $hex, 0xhex, oder dezimal.
 Bei reinen Ziffern mit fuehrender 0 und 3+ Stellen (z.B. '0400')
@@ -75,6 +103,43 @@ def main():
         print(__doc__)
         sys.exit(0)
 
+    # --minimal flag: hide all chrome, just show the video.
+    # Right-click pops "Close Streamer?" Yes/No. Can be combined
+    # with BBS auto-close. The flag can take an optional scale
+    # value 1..8 after an = sign (picks from a fixed table of
+    # window sizes; see u64_streamer._MINIMAL_SIZES):
+    #   --minimal       -> scale 4 (768x544, default)
+    #   --minimal=1     ->  192x 136 (half VIC-II)
+    #   --minimal=2     ->  384x 272 (native 1:1)
+    #   --minimal=3     ->  576x 408
+    #   --minimal=4     ->  768x 544
+    #   --minimal=5     ->  960x 680
+    #   --minimal=6     -> 1152x 816
+    #   --minimal=7     -> 1536x1088
+    #   --minimal=8     -> 1920x1360 (~FullHD)
+    minimal_mode = False
+    minimal_scale = 4          # default if --minimal without =N
+    new_argv = []
+    for a in argv:
+        if a == '--minimal':
+            minimal_mode = True
+        elif a.startswith('--minimal='):
+            minimal_mode = True
+            val = a.split('=', 1)[1]
+            try:
+                minimal_scale = int(val)
+            except ValueError:
+                print(f"Invalid --minimal scale: {val!r} "
+                      f"(use 1..8)", file=sys.stderr)
+                sys.exit(2)
+            if not (1 <= minimal_scale <= 8):
+                print(f"--minimal scale {minimal_scale} out of "
+                      f"range (use 1..8)", file=sys.stderr)
+                sys.exit(2)
+        else:
+            new_argv.append(a)
+    argv = new_argv
+
     # Argumente parsen: drei Modi
     #   []                           -> normaler Start, kein Auto-Close
     #   ['BBS', addr, value]         -> Start + Auto-Close
@@ -104,7 +169,7 @@ def main():
                     file=sys.stderr)
             sys.exit(2)
     else:
-        print("Usage: quopus_streamer.py [BBS ADDR VALUE]\n"
+        print("Usage: quopus_streamer.py [--minimal[=1..8]] [BBS ADDR VALUE]\n"
               "       (use --help for details)", file=sys.stderr)
         sys.exit(2)
 
@@ -177,6 +242,15 @@ def main():
         video_only=video_only,
         always_on_top=always_on_top)
     streamer.show()
+
+    # Minimal mode: hide every chrome element so only the video
+    # picture is visible. Has to happen AFTER show() because Qt
+    # only finishes its initial layout pass at that point - hiding
+    # things earlier sometimes leaves stray space where the widgets
+    # used to be. The right-click "Close Streamer?" confirmation
+    # is wired up inside enter_minimal_mode itself.
+    if minimal_mode:
+        streamer.enter_minimal_mode(scale=minimal_scale)
 
     # Stream automatisch starten - simuliert den 'Start'-Klick.
     # 50ms Verzoegerung damit das Fenster fertig gelayouted ist.
