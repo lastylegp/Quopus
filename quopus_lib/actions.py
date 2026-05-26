@@ -18,6 +18,7 @@ from PyQt6.QtGui import QPixmap
 from .palette import C, SCROLLBAR_QSS, fmt_size
 from .dialogs import DirReverseDialog, BuffersDialog
 from .config import save_config
+from .config import scaled_font_px
 
 
 class TransferCancelled(Exception):
@@ -47,7 +48,7 @@ class ActionDispatcher:
         te.setStyleSheet(f"""
             background-color: {C.BLACK}; color: {C.WHITE};
             font-family: "Topaz-8","Topaz","Courier New",monospace;
-            font-size: 12px; border: 1px solid {C.BLACK};
+            font-size: {scaled_font_px(12)}px; border: 1px solid {C.BLACK};
         """ + SCROLLBAR_QSS)
         lay.addWidget(te); dlg.exec()
 
@@ -331,7 +332,7 @@ class ActionDispatcher:
         cmd_label = QLabel(f"Running:  {cmd_str}")
         cmd_label.setStyleSheet(
             f"color: #444; font-family: 'Topaz','Courier New',monospace; "
-            f"font-size: 11px; padding: 4px;")
+            f"font-size: {scaled_font_px(11)}px; padding: 4px;")
         cmd_label.setWordWrap(True)
         lay.addWidget(cmd_label)
         # Output area: black background, monospaced, read-only.
@@ -341,13 +342,13 @@ class ActionDispatcher:
         te.setStyleSheet(f"""
             background-color: {C.BLACK}; color: {C.WHITE};
             font-family: "Topaz-8","Topaz","Courier New",monospace;
-            font-size: 12px; border: 1px solid {C.BLACK};
+            font-size: {scaled_font_px(12)}px; border: 1px solid {C.BLACK};
         """ + SCROLLBAR_QSS)
         lay.addWidget(te, 1)
         # Status line shows running / finished + exit code.
         status_label = QLabel("Running...")
         status_label.setStyleSheet(
-            f"padding: 4px; font-size: 11px;")
+            f"padding: 4px; font-size: {scaled_font_px(11)}px;")
         lay.addWidget(status_label)
         # Buttons: Cancel (terminates), Close (only enabled when done).
         bbar = QHBoxLayout()
@@ -3478,6 +3479,8 @@ class ActionDispatcher:
         """)
         menu.addAction("Action buttons...",  lambda: self._cfg_buttons())
         menu.addAction("File associations...", lambda: self._cfg_file_assoc())
+        menu.addAction("Settings (font, appearance)...",
+                         lambda: self._cfg_appearance())
         menu.addSeparator()
         # C64 emulator configuration - Pfad und Args-Template fuer
         # VICE (oder Hoxs64/CCS64). Wird sowohl vom 'Run in emulator'-
@@ -3591,6 +3594,246 @@ class ActionDispatcher:
         if dlg.exec() == QDialog.DialogCode.Accepted:
             save_config(self.w.config)
             self._status("File associations saved")
+
+    def _cfg_appearance(self):
+        """Settings dialog: app font family, scale factor (%),
+        pointsize override. Live-applies via the central
+        scaled_font_px() pipeline so changes show up across
+        most of the UI without a restart.
+
+        Two complementary controls:
+          - **Scale (%)**: multiplies every stylesheet base size
+            by this factor. 100 = original, 150 = everything 50%
+            bigger, 75 = denser. Range 50..300.
+          - **Pointsize override**: replaces the BASE size for
+            "body text" stylesheets (the 10/11/12 px ones) so
+            the user can set e.g. 14 as their personal base.
+            Larger headings keep their relative differentiation.
+            0 = use original base sizes.
+
+        These two settings stack: pointsize-override sets a new
+        base, scale multiplies it. The preview updates live so
+        you can see what the combo looks like before clicking
+        Apply or OK.
+
+        Buttons:
+          - Apply: persist + apply to the whole running app,
+            keep dialog open for iteration
+          - OK: same as Apply, but close
+          - Cancel: revert everything to dialog-open state, close
+        """
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+            QFontComboBox, QSpinBox, QPushButton, QCheckBox,
+            QGroupBox, QSlider, QApplication)
+        from PyQt6.QtGui import QFont
+        from PyQt6.QtCore import Qt
+        from .config import (apply_app_font, scaled_font_px,
+                              refresh_all_widgets_font)
+
+        dlg = QDialog(self.w)
+        dlg.setWindowTitle("Settings - Appearance")
+        dlg.resize(560, 480)
+
+        # Snapshot original values so Cancel can revert.
+        original_font = QApplication.instance().font()
+        original_family = self.w.config.get("app_font_family", "")
+        original_scale = self.w.config.get(
+            "app_font_scale_percent", 100)
+        original_override = self.w.config.get(
+            "app_font_pointsize_override", 0)
+
+        lay = QVBoxLayout(dlg)
+        lay.setSpacing(10)
+
+        # --- Font family (covers widgets WITHOUT inline css) ----
+        gb_family = QGroupBox("Default font family (widgets without inline CSS)")
+        gb_family_lay = QVBoxLayout(gb_family)
+        fam_row = QHBoxLayout()
+        fam_row.addWidget(QLabel("Family:"))
+        cmb_family = QFontComboBox()
+        if original_family:
+            cmb_family.setCurrentFont(QFont(original_family))
+        fam_row.addWidget(cmb_family, 1)
+        gb_family_lay.addLayout(fam_row)
+        chk_default_family = QCheckBox(
+            "Use platform default family")
+        chk_default_family.setChecked(not original_family)
+        chk_default_family.setToolTip(
+            "When checked, only the size settings below take "
+            "effect.\nThe font family stays at whatever your "
+            "OS/desktop chose.\nUncheck to pick a specific "
+            "family from the list above.")
+        def _sync_family_enabled():
+            cmb_family.setEnabled(
+                not chk_default_family.isChecked())
+        chk_default_family.toggled.connect(_sync_family_enabled)
+        _sync_family_enabled()
+        gb_family_lay.addWidget(chk_default_family)
+        lay.addWidget(gb_family)
+
+        # --- Scale slider (the main control) -------------------
+        gb_scale = QGroupBox("Font scale (%)")
+        gb_scale_lay = QVBoxLayout(gb_scale)
+        scale_row = QHBoxLayout()
+        sld_scale = QSlider(Qt.Orientation.Horizontal)
+        sld_scale.setRange(50, 300)
+        sld_scale.setValue(int(original_scale))
+        sld_scale.setTickInterval(25)
+        sld_scale.setTickPosition(QSlider.TickPosition.TicksBelow)
+        sld_scale.setToolTip(
+            "Multiplies every stylesheet font size by this "
+            "factor.\n100% = original sizes\n"
+            "125-150% = noticeably bigger\n"
+            "75% = denser, for small screens")
+        spin_scale = QSpinBox()
+        spin_scale.setRange(50, 300)
+        spin_scale.setSuffix(" %")
+        spin_scale.setValue(int(original_scale))
+        spin_scale.setFixedWidth(80)
+        # Two-way sync between slider and spin
+        sld_scale.valueChanged.connect(spin_scale.setValue)
+        spin_scale.valueChanged.connect(sld_scale.setValue)
+        scale_row.addWidget(sld_scale, 1)
+        scale_row.addWidget(spin_scale)
+        gb_scale_lay.addLayout(scale_row)
+        # Quick-set buttons for common values
+        quick_row = QHBoxLayout()
+        for v in (75, 100, 125, 150, 175, 200):
+            btn = QPushButton(f"{v}%")
+            btn.setFixedWidth(56)
+            btn.clicked.connect(
+                lambda _checked, val=v: spin_scale.setValue(val))
+            quick_row.addWidget(btn)
+        quick_row.addStretch(1)
+        gb_scale_lay.addLayout(quick_row)
+        lay.addWidget(gb_scale)
+
+        # --- Pointsize override (advanced) ---------------------
+        gb_override = QGroupBox("Body-text pointsize override (advanced)")
+        gb_override_lay = QVBoxLayout(gb_override)
+        ov_row = QHBoxLayout()
+        ov_row.addWidget(QLabel("Override:"))
+        spin_override = QSpinBox()
+        spin_override.setRange(0, 30)
+        spin_override.setSpecialValueText("Off (use original)")
+        spin_override.setValue(int(original_override))
+        spin_override.setToolTip(
+            "If non-zero, replaces the BASE size for body-text "
+            "stylesheets\n(those originally at 10/11/12 px). "
+            "The scale% then multiplies\nthat override. Leave "
+            "at 0 (Off) to use each stylesheet's own base.")
+        spin_override.setSuffix(" px")
+        ov_row.addWidget(spin_override)
+        ov_row.addStretch(1)
+        gb_override_lay.addLayout(ov_row)
+        lay.addWidget(gb_override)
+
+        # --- Live preview -------------------------------------
+        gb_preview = QGroupBox("Preview")
+        prev_lay = QVBoxLayout(gb_preview)
+        lbl_preview = QLabel(
+            "The quick brown fox jumps over the lazy dog\n"
+            "0123456789  -=+_(){}[]<>!@#$%^&*\n"
+            "Quopus Commander - C64 demoscene file manager")
+        lbl_preview.setStyleSheet(
+            "background-color: #fafafa; color: #000; "
+            "border: 1px solid #888; padding: 8px;")
+        prev_lay.addWidget(lbl_preview)
+        lay.addWidget(gb_preview)
+
+        def _refresh_preview():
+            # Compute what the body-text size would be with
+            # current settings.
+            scale_v = spin_scale.value()
+            ov_v = spin_override.value()
+            base = ov_v if ov_v > 0 else 11
+            new_px = max(6, round(base * scale_v / 100))
+            if chk_default_family.isChecked():
+                fam = ""
+            else:
+                fam = cmb_family.currentFont().family()
+            css = (
+                f"background-color: #fafafa; color: #000; "
+                f"border: 1px solid #888; padding: 8px; "
+                f"font-size: {new_px}px;")
+            if fam:
+                css += f' font-family: "{fam}";'
+            lbl_preview.setStyleSheet(css)
+        cmb_family.currentFontChanged.connect(
+            lambda _f: _refresh_preview())
+        spin_scale.valueChanged.connect(
+            lambda _v: _refresh_preview())
+        spin_override.valueChanged.connect(
+            lambda _v: _refresh_preview())
+        chk_default_family.toggled.connect(
+            lambda _b: _refresh_preview())
+        _refresh_preview()
+
+        lay.addStretch(1)
+
+        # --- Bottom button row --------------------------------
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        btn_apply = QPushButton("Apply")
+        btn_apply.setToolTip(
+            "Apply right now to the whole app,\nkeep dialog "
+            "open for iteration.")
+        btn_ok = QPushButton("OK")
+        btn_ok.setDefault(True)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.setToolTip(
+            "Revert any live-applied changes and close.")
+        btn_row.addWidget(btn_apply)
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+        lay.addLayout(btn_row)
+
+        def _collect():
+            """Push current widget state into self.w.config."""
+            if chk_default_family.isChecked():
+                self.w.config["app_font_family"] = ""
+            else:
+                self.w.config["app_font_family"] =                     cmb_family.currentFont().family()
+            self.w.config["app_font_scale_percent"] =                 spin_scale.value()
+            self.w.config["app_font_pointsize_override"] =                 spin_override.value()
+
+        def _do_apply():
+            _collect()
+            # Update QApplication default font (handles widgets
+            # without inline CSS)
+            apply_app_font(self.w.config)
+            # And re-render every styled widget so the new
+            # scaled_font_px() values get re-computed
+            refresh_all_widgets_font()
+
+        def _do_ok():
+            _do_apply()
+            save_config(self.w.config)
+            self._status(
+                f"App font: scale "
+                f"{self.w.config['app_font_scale_percent']}%, "
+                f"override "
+                f"{self.w.config['app_font_pointsize_override']}, "
+                f"family "
+                f"{self.w.config['app_font_family'] or 'default'}")
+            dlg.accept()
+
+        def _do_cancel():
+            # Revert everything to dialog-open state
+            self.w.config["app_font_family"] = original_family
+            self.w.config["app_font_scale_percent"] = original_scale
+            self.w.config["app_font_pointsize_override"] =                 original_override
+            QApplication.instance().setFont(original_font)
+            refresh_all_widgets_font()
+            dlg.reject()
+
+        btn_apply.clicked.connect(_do_apply)
+        btn_ok.clicked.connect(_do_ok)
+        btn_cancel.clicked.connect(_do_cancel)
+
+        dlg.exec()
+
 
     def act_about(self, src, dst, param):
         from .config import CONFIG_FILE

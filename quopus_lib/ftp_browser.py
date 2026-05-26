@@ -19,6 +19,7 @@ from .palette import (
     WB_TITLEBAR_INACTIVE_QSS, WB_TITLEBAR_ACTIVE_QSS, INFOBAR_QSS,
 )
 from .ftp_backend import make_backend, RemoteEntry
+from .config import scaled_font_px
 
 
 # Maximum number of FTP bookmarks kept in config
@@ -72,7 +73,7 @@ class FtpBookmarkManagerDialog(QDialog):
             QTreeWidget {{
                 background-color: {C.LISTER_BG}; color: {C.LISTER_FG};
                 font-family: "Topaz-8","Courier New",monospace;
-                font-size: 12px;
+                font-size: {scaled_font_px(12)}px;
                 border: 1px solid {C.BLACK};
                 selection-background-color: {C.SELECTED};
                 selection-color: {C.WHITE};
@@ -762,7 +763,7 @@ class FtpBrowserDialog(QDialog):
             QTreeWidget {{
                 background-color: {C.LISTER_BG}; color: {C.LISTER_FG};
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 12px;
+                font-size: {scaled_font_px(12)}px;
                 border: 1px solid {C.BLACK};
                 selection-background-color: {C.SELECTED};
                 selection-color: {C.WHITE};

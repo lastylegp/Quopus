@@ -164,6 +164,19 @@ class QuopusMain(QMainWindow):
     def __init__(self):
         super().__init__()
         self.config = load_config()
+        # Stash a pointer to the live config on the QApplication
+        # so that helper functions in config.py (scaled_font_px,
+        # current_font_scale) can read it without needing to pass
+        # cfg through dozens of stylesheet-building call sites.
+        # The setattr is harmless if QApplication.instance() is
+        # None during testing.
+        try:
+            from PyQt6.QtWidgets import QApplication as _QApp
+            _app = _QApp.instance()
+            if _app is not None:
+                _app._quopus_cfg = self.config
+        except Exception:
+            pass
         self.buffers = []
         self.actions = ActionDispatcher(self)
         self._active_side = 'left'
@@ -359,7 +372,7 @@ class QuopusMain(QMainWindow):
                     color: {C.BLACK};
                     border: 1px solid {C.BLACK};
                     font-family: "Topaz-8","Topaz","Courier New",monospace;
-                    font-size: 11px;
+                    font-size: {scaled_font_px(11)}px;
                     padding: 2px 4px;
                 }}
                 QPushButton:hover {{
@@ -999,7 +1012,7 @@ class QuopusMain(QMainWindow):
             QPlainTextEdit {{
                 background-color: #000000; color: #cccccc;
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 13px;
+                font-size: {scaled_font_px(13)}px;
                 border: 1px solid {C.BLACK};
                 padding: 4px;
             }}
@@ -1382,7 +1395,7 @@ class QuopusMain(QMainWindow):
             QPlainTextEdit {{
                 background-color: #000000; color: #cccccc;
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 13px;
+                font-size: {scaled_font_px(13)}px;
                 border: 1px solid {C.BLACK};
                 padding: 4px;
             }}
@@ -2057,7 +2070,7 @@ class QuopusMain(QMainWindow):
                     background-color: rgba(0, 0, 0, 220);
                     color: {C.ACTIVE_FG};
                     font-family: "Topaz-8","Topaz","Courier New",monospace;
-                    font-size: 14px;
+                    font-size: {scaled_font_px(14)}px;
                     border: 1px solid {C.ACTIVE_BG};
                     padding: 6px 10px;
                 }}
@@ -2426,12 +2439,53 @@ class QuopusMain(QMainWindow):
         save_config(self.config)
         event.accept()
 
+    def _refresh_dynamic_stylesheets(self):
+        """Called by config.refresh_all_widgets_font() after the
+        user changes scale settings in the Appearance dialog.
+        Triggers a font/stylesheet refresh on every Quopus-
+        managed sub-widget that needs explicit help to pick up
+        the new scaled_font_px() values.
+
+        Why this is needed: QApplication.setFont() and a global
+        unpolish/polish pass cover widgets WITHOUT inline CSS.
+        But widgets with hardcoded f-string stylesheets (lister
+        TreeView headers, action button styling, etc.) only
+        re-render their CSS when setStyleSheet() is called
+        explicitly. This hook calls those refresh methods.
+        """
+        # Listers: refresh treeview font + header stylesheet
+        for lister in (self.left_lister, self.right_lister):
+            try:
+                lister.refresh_fonts()
+            except Exception as e:
+                print(f"[font refresh] lister failed: {e}")
+        # Action button area: rebuild stylesheets if a refresh
+        # hook exists. The action_button_area widget keeps its
+        # styling in f-strings that need re-evaluation.
+        for attr in ('action_button_area',
+                      'left_drive_column',
+                      'right_drive_column'):
+            w = getattr(self, attr, None)
+            if w is None:
+                continue
+            for hook in ('refresh_fonts',
+                          '_refresh_stylesheet'):
+                fn = getattr(w, hook, None)
+                if callable(fn):
+                    try:
+                        fn()
+                    except Exception as e:
+                        print(f"[font refresh] {attr}.{hook} "
+                              f"failed: {e}")
+                    break
+
 
 # =====================================================================
 # Compact button-assignment edit dialog
 # =====================================================================
 from PyQt6.QtWidgets import QDialog, QLineEdit, QGridLayout, QFormLayout
 from .palette import BUTTON_STYLES, WB_TITLEBAR_INACTIVE_QSS
+from .config import scaled_font_px
 
 
 class _ButtonAssignEditDialog(QDialog):
@@ -2464,7 +2518,7 @@ class _ButtonAssignEditDialog(QDialog):
         edit_qss = (
             f"QLineEdit {{ background-color: #ffffff; color: #000000; "
             f"border: 1px solid #000000; padding: 3px 6px; "
-            f"font-family: 'Topaz','Courier New',monospace; font-size: 12px; }}")
+            f"font-family: 'Topaz','Courier New',monospace; font-size: {scaled_font_px(12)}px; }}")
 
         # Action picker - hierarchical menu built from the central
         # catalog. action_catalog.ACTION_GROUPS is shared with the
@@ -2548,7 +2602,7 @@ class _ButtonAssignEditDialog(QDialog):
         hint = QLabel(
             "  Tokens for Param:  %f = first file, %F = all selected, "
             "%n = basename, %p = current dir, %d = other-side dir")
-        hint.setStyleSheet("QLabel { color: #444; font-size: 10px; }")
+        hint.setStyleSheet(f"QLabel {{ color: #444; font-size: {scaled_font_px(10)}px; }}")
         hint.setWordWrap(True)
         form.addRow("", hint)
 
@@ -2654,7 +2708,7 @@ class _ButtonAssignEditDialog(QDialog):
         hint2 = QLabel(
             "  Image overrides text when both are set. "
             "Image is shown in the upper half of the window.")
-        hint2.setStyleSheet("QLabel { color: #444; font-size: 10px; }")
+        hint2.setStyleSheet(f"QLabel {{ color: #444; font-size: {scaled_font_px(10)}px; }}")
         hint2.setWordWrap(True)
         form.addRow("", hint2)
 
@@ -2705,7 +2759,7 @@ class _ButtonAssignEditDialog(QDialog):
                 f"QPushButton {{ background-color: {bg}; color: {fg}; "
                 f"border: 1px solid #000000; "
                 f"font-family: 'Topaz','Courier New',monospace; "
-                f"font-weight: bold; font-size: 11px; }}"
+                f"font-weight: bold; font-size: {scaled_font_px(11)}px; }}"
                 f"QPushButton:hover {{ border: 2px solid #ffff00; }}")
             def pick(_=None, n=name):
                 self._current_color = n

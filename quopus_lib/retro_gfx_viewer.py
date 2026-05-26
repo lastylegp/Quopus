@@ -28,6 +28,7 @@ from PyQt6.QtGui import (
 from PyQt6.QtCore import Qt, QSize
 
 import os
+from .config import scaled_font_px
 
 
 # -----------------------------------------------------------------
@@ -1737,7 +1738,7 @@ class RetroGfxLauncherDialog(QDialog):
             "For all other retro formats (500+), install recoil2png "
             "from recoil.sourceforge.net - it is auto-detected.")
         info.setWordWrap(True)
-        info.setStyleSheet("color: #444; font-size: 11px;")
+        info.setStyleSheet(f"color: #444; font-size: {scaled_font_px(11)}px;")
         layout.addWidget(info)
 
         # Format-Auswahl
@@ -1767,7 +1768,7 @@ class RetroGfxLauncherDialog(QDialog):
         hint = QLabel(
             "Auto-detect uses file size + extension. Pick a specific "
             "format to force interpretation.")
-        hint.setStyleSheet("color: #666; font-size: 10px;")
+        hint.setStyleSheet(f"color: #666; font-size: {scaled_font_px(10)}px;")
         hint.setWordWrap(True)
         fmt_l.addWidget(hint)
         layout.addWidget(fmt_box)
@@ -2202,7 +2203,7 @@ class BitmapViewer(QDialog, FolderBrowserMixin):
         self.lbl_status = QLabel()
         self.lbl_status.setStyleSheet(
             "padding: 2px 6px; background: #e8e8e8; "
-            "color: #444; font-size: 10px;")
+            f"color: #444; font-size: {scaled_font_px(10)}px;")
         layout.addWidget(self.lbl_status)
 
         # Folder browser einrichten
@@ -2394,7 +2395,7 @@ class RecoilViewer(QDialog, FolderBrowserMixin):
         self.lbl_status = QLabel()
         self.lbl_status.setStyleSheet(
             "padding: 2px 6px; background: #e8e8e8; "
-            "color: #444; font-size: 10px;")
+            f"color: #444; font-size: {scaled_font_px(10)}px;")
         layout.addWidget(self.lbl_status)
 
         # Folder browser einrichten
@@ -2601,7 +2602,7 @@ class PngToSequenceDialog(QDialog):
         self.ed_hex.setMaximumHeight(120)
         self.ed_hex.setStyleSheet(
             "QPlainTextEdit { font-family: 'Consolas', "
-            "'Courier New', monospace; font-size: 11px; }")
+            f"'Courier New', monospace; font-size: {scaled_font_px(11)}px; }}")
         self.ed_hex.setReadOnly(True)
         otb_l.addWidget(self.ed_hex)
         # Format selector for the text output

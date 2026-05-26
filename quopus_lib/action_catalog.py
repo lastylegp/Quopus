@@ -28,6 +28,7 @@ Helpers:
   using this for slot-assignment grids can show unbound rows.
 """
 from __future__ import annotations
+from .config import scaled_font_px
 
 
 # --------------------------------------------------------------------
@@ -238,7 +239,7 @@ def build_action_picker_button(parent, current_key: str,
         "color: #000000; border: 1px solid #000000; "
         "padding: 4px 8px; "
         "font-family: 'Topaz','Courier New',monospace; "
-        "font-size: 12px; text-align: left; }"
+        f"font-size: {scaled_font_px(12)}px; text-align: left; }}"
         "QPushButton::menu-indicator { "
         "subcontrol-origin: padding; subcontrol-position: "
         "right center; }")
@@ -250,7 +251,7 @@ def build_action_picker_button(parent, current_key: str,
         "QMenu { background-color: #cccccc; color: #000000; "
         "border: 1px solid #000000; "
         "font-family: 'Topaz','Courier New',monospace; "
-        "font-size: 12px; } "
+        f"font-size: {scaled_font_px(12)}px; }} "
         "QMenu::item:selected { background-color: #5566ff; "
         "color: #ffffff; }")
 

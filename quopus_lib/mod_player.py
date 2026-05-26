@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QListWidgetItem, QWidget, QFrame, QSizePolicy, QSlider, QMessageBox,
     QSplitter, QApplication,
 )
+from .config import scaled_font_px
 
 # =====================================================================
 # libopenmpt ctypes wrapper
@@ -1322,7 +1323,7 @@ class ModPlayerDialog(QDialog):
         self._time_label = QLabel("00:00 / 00:00")
         self._time_label.setStyleSheet(
             "color: black; font-family: 'Topaz-8','Cascadia Mono',"
-            "monospace; font-weight: bold; font-size: 12px;")
+            f"monospace; font-weight: bold; font-size: {scaled_font_px(12)}px;")
         time_row.addWidget(self._time_label)
         time_row.addStretch(1)
         self._led = PTLED("DISK")
@@ -1339,7 +1340,7 @@ class ModPlayerDialog(QDialog):
         vol_lbl = QLabel("VOL")
         vol_lbl.setStyleSheet(
             "color: black; font-family: 'Topaz-8','Cascadia Mono',"
-            "monospace; font-weight: bold; font-size: 11px;")
+            f"monospace; font-weight: bold; font-size: {scaled_font_px(11)}px;")
         vol_row.addWidget(vol_lbl)
         self._vol_slider = PTSlider()
         self._vol_slider.setMinimum(0)

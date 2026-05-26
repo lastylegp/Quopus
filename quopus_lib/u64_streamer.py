@@ -56,6 +56,7 @@ except Exception:
 
 from .palette import (
     C, WB_TITLEBAR_INACTIVE_QSS, INFOBAR_QSS, button_qss,
+    get_mono_font,
 )
 
 
@@ -253,6 +254,7 @@ def send_telnet_sequence(host: str, data: bytes,
 import urllib.request
 import urllib.parse
 import json as _json
+from .config import scaled_font_px
 
 
 def _u64_http_post(host: str, path: str, body: bytes,
@@ -2452,8 +2454,7 @@ class _HexByteDelegate(QStyledItemDelegate):
         rx = QRegularExpression(r"[0-9A-Fa-f]{1,2}")
         ed.setValidator(QRegularExpressionValidator(rx, ed))
         # Monospace damit die Eingabe optisch zur Tabelle passt
-        mono = QFontDatabase.systemFont(
-            QFontDatabase.SystemFont.FixedFont)
+        mono = get_mono_font(11)
         ed.setFont(mono)
         # Selektiere bestehenden Text wenn Editor sichtbar wird,
         # damit Tippen ihn direkt ersetzt (klassisches "in cell
@@ -2539,7 +2540,7 @@ class ReferencesDialog(QDialog):
             f"matches indicate indexed addressing where the index "
             f"value would have to land on the target.")
         info.setWordWrap(True)
-        info.setStyleSheet("color: #888; font-size: 11px;")
+        info.setStyleSheet(f"color: #888; font-size: {scaled_font_px(11)}px;")
         layout.addWidget(info)
 
         # Toolbar
@@ -2580,8 +2581,7 @@ class ReferencesDialog(QDialog):
         tables_row = QHBoxLayout()
         tables_row.setSpacing(8)
 
-        mono = QFontDatabase.systemFont(
-            QFontDatabase.SystemFont.FixedFont)
+        mono = get_mono_font(11)
 
         # Reads-Tabelle
         reads_box = QVBoxLayout()
@@ -2818,7 +2818,7 @@ class CodePatternDialog(QDialog):
                 f"Full $0000-$FFFF scan, may include false positives.")
         info = QLabel(info_txt)
         info.setWordWrap(True)
-        info.setStyleSheet("color: #888; font-size: 11px;")
+        info.setStyleSheet(f"color: #888; font-size: {scaled_font_px(11)}px;")
         layout.addWidget(info)
 
         # Toolbar
@@ -2860,8 +2860,7 @@ class CodePatternDialog(QDialog):
         bar.addWidget(btn_close)
         layout.addLayout(bar)
 
-        mono = QFontDatabase.systemFont(
-            QFontDatabase.SystemFont.FixedFont)
+        mono = get_mono_font(11)
 
         if mode == "value_loads":
             # Eine Tabelle
@@ -3436,14 +3435,13 @@ class MemoryViewDialog(QDialog):
         hint = QLabel(
             "Double-click a hex cell to edit (1-2 hex digits, "
             "Enter to poke).")
-        hint.setStyleSheet("color: #888; font-size: 11px;")
+        hint.setStyleSheet(f"color: #888; font-size: {scaled_font_px(11)}px;")
         layout.addWidget(hint)
 
         # Beide Views als QTableWidget; via QStackedWidget gewechselt
         self._stack = QStackedWidget()
 
-        mono = QFontDatabase.systemFont(
-            QFontDatabase.SystemFont.FixedFont)
+        mono = get_mono_font(11)
         self._delegate = _HexByteDelegate(self)
 
         # --- HEX-Table ---
@@ -4996,7 +4994,7 @@ class U64ConfigDialog(QDialog):
             "ask which device to use when more than one is\n"
             "configured.")
         hint.setStyleSheet(
-            "color: #555; font-size: 10px; "
+            f"color: #555; font-size: {scaled_font_px(10)}px; "
             "margin-left: 12px;")
         layout.addWidget(hint)
 
@@ -7194,12 +7192,23 @@ class U64Streamer(QDialog):
             # of pointless work.
             img = QImage(self._framebuf, FRAME_W, FRAME_H,
                            FRAME_W * 4, QImage.Format.Format_RGBA8888)
-            # Use the QLabel's actual current size, clamped to never
-            # render smaller than 1:1 (otherwise the picture vanishes
-            # if the user collapses the window).
+            # Scale the picture to fit the QLabel's current size,
+            # keeping the 384:272 aspect ratio via KeepAspectRatio.
+            # Both DOWN-scaling (small window) and UP-scaling
+            # (large window) work - the previous version used
+            # max(FRAME_W, avail.width()) which clamped the
+            # scale target to a minimum of 384x272, so windows
+            # smaller than that got the picture rendered at
+            # full size and cropped by the label's bounds (only
+            # the top-left quarter visible). Now any window
+            # size gets a properly fitted picture.
             avail = self.video_label.size()
-            target_w = max(FRAME_W, avail.width())
-            target_h = max(FRAME_H, avail.height())
+            # Lower bound of 1 px so the QImage.scaled() call
+            # doesn't crash on a degenerate 0-sized label
+            # during initial layout / mid-resize. Anything
+            # below ~50 px is unreadable anyway.
+            target_w = max(1, avail.width())
+            target_h = max(1, avail.height())
             scaled = img.scaled(
                 target_w, target_h,
                 Qt.AspectRatioMode.KeepAspectRatio,
@@ -7411,8 +7420,41 @@ class U64Streamer(QDialog):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint,
                             True)
 
+        # Install our eventFilter on the video QLabel so its
+        # mouse events get forwarded to the dialog-level
+        # mousePressEvent / mouseMoveEvent / mouseReleaseEvent /
+        # contextMenuEvent overrides. Without this, clicks
+        # landing on the label (= 100% of the window in minimal
+        # mode) never reach our drag/close handlers because Qt
+        # doesn't auto-propagate mouse events from a child
+        # widget to its parent.
+        try:
+            self.video_label.installEventFilter(self)
+            # Enable mouse-tracking so MouseMove events arrive
+            # even when no button is pressed (some Linux WMs
+            # only deliver button-held move events otherwise).
+            self.video_label.setMouseTracking(True)
+            self.setMouseTracking(True)
+            # Cursor hint - shows the user this is a draggable
+            # surface. Switches to OpenHandCursor over the
+            # picture; ClosedHandCursor would be nicer during
+            # the actual drag but Qt's startSystemMove takes
+            # control of the cursor mid-drag on most platforms
+            # so the extra state machine isn't worth it.
+            from PyQt6.QtCore import Qt as _Qt
+            self.video_label.setCursor(_Qt.CursorShape.OpenHandCursor)
+        except Exception:
+            pass
+
         # --- Restore saved position from cfg if available -----
+        # Wayland note: this is a no-op under Wayland because
+        # the compositor refuses programmatic move() calls
+        # (window placement is the compositor's job there, not
+        # the app's). We still try - the call just silently
+        # does nothing on Wayland. Under X11/Windows/macOS the
+        # move() works fine.
         saved_pos = self._load_minimal_position()
+        is_wayland = self._is_running_under_wayland()
 
         # Defer all the geometry tweaks - Qt processes the
         # setVisible(False) calls + the window-flag change
@@ -7421,25 +7463,69 @@ class U64Streamer(QDialog):
         def _apply_geometry():
             # setFixedSize is stronger than resize() - it both
             # resizes AND prevents Qt's layout from snapping
-            # the window back to its sizeHint (which is what was
-            # causing the black borders, since the dialog's
-            # sizeHint with our hidden chrome was wider than
-            # the picture-only target size).
+            # the window back to its sizeHint.
             self.setFixedSize(video_w, video_h)
-            if saved_pos is not None:
+            if saved_pos is not None and not is_wayland:
+                # Under X11 / Windows / macOS the WM honors
+                # this. Under Wayland it's a no-op so we skip
+                # noisy attempts and print a one-time hint.
                 self.move(saved_pos[0], saved_pos[1])
+            elif saved_pos is not None and is_wayland:
+                # Tell the user once that Wayland is in charge
+                # of window position - if they wanted persistent
+                # placement, they need to be on X11.
+                if not getattr(self, '_wayland_position_warned',
+                                False):
+                    print("  [streamer] Wayland session "
+                          "detected - saved window position "
+                          f"({saved_pos[0]}, {saved_pos[1]}) "
+                          f"cannot be restored, Wayland "
+                          f"compositor controls window "
+                          f"placement. Drag the window once "
+                          f"after start; position is still "
+                          f"saved for the day you switch to "
+                          f"X11.")
+                    self._wayland_position_warned = True
             # show() is required after toggling FramelessWindowHint
             # for the change to take effect on Win/X11.
             self.show()
             # Force one more video repaint at the new label size
             # so the picture re-scales to fill the now-shrunk
-            # window. Without this the picture stays at its old
-            # smaller render until the next frame arrives.
+            # window.
             try:
                 self._refresh_video_widget()
             except Exception:
                 pass
         QTimer.singleShot(0, _apply_geometry)
+
+    def _is_running_under_wayland(self) -> bool:
+        """Detect whether the current Qt-platform is Wayland.
+
+        Order of checks:
+          1. The XDG_SESSION_TYPE env var (most reliable on
+             modern distros - GDM/SDDM/etc. set this explicitly)
+          2. Qt's own QGuiApplication.platformName() which
+             returns 'wayland' / 'xcb' depending on what Qt
+             was actually told to use (this catches WAYLAND_DISPLAY
+             override scenarios where the session is X11 but
+             Qt was asked to use the Wayland backend via
+             QT_QPA_PLATFORM=wayland)
+        Either match counts as Wayland.
+        """
+        import os
+        if os.environ.get("XDG_SESSION_TYPE", "").lower() \
+                == "wayland":
+            return True
+        try:
+            from PyQt6.QtGui import QGuiApplication
+            app = QGuiApplication.instance()
+            if app is not None:
+                pf = app.platformName()
+                if pf and 'wayland' in pf.lower():
+                    return True
+        except Exception:
+            pass
+        return False
 
     # --- Saved-position helpers (minimal mode only) -------------
     def _minimal_position_path(self):
@@ -7491,14 +7577,48 @@ class U64Streamer(QDialog):
         """Start a window-drag when the user left-clicks in
         minimal mode. In other modes mouse press has its normal
         behavior (focus widget, etc) - we only intercept when
-        _minimal_mode is True."""
+        _minimal_mode is True.
+
+        Implementation: prefer Qt's startSystemMove() over a
+        manual move loop. That's the right pattern for frameless
+        windows since Qt 5.15 - it asks the underlying window
+        manager (X11, Wayland, win32, AppKit) to handle the drag
+        natively. Big advantages:
+
+          - Works on Wayland, where apps are NOT allowed to set
+            their own window position via self.move(). Wayland
+            clients can only request a drag-and-let-the-
+            compositor-handle-it via this exact API.
+          - Native snap-to-edge behavior on Windows, Aero Snap,
+            half-screen tiling on GNOME etc - all happen for
+            free because the WM owns the drag.
+          - No fight between our move() loop and the WM's own
+            window movement events.
+
+        Fallback: if startSystemMove() returns False (very old
+        Qt, unusual platform), fall back to the manual offset-
+        based move loop. mouseMoveEvent then uses _minimal_drag_offset.
+        """
         from PyQt6.QtCore import Qt
         if (getattr(self, '_minimal_mode', False)
                 and ev.button() == Qt.MouseButton.LeftButton):
-            # Remember the offset from the window's top-left
-            # corner to the click point - we keep this constant
-            # during drag so the window follows the cursor
-            # without "jumping" to align corner to pointer.
+            wh = self.windowHandle()
+            if wh is not None and hasattr(wh, 'startSystemMove'):
+                # Native path - WM takes over from here. Our
+                # mouseMoveEvent will not even be called for
+                # this drag.
+                started = wh.startSystemMove()
+                if started:
+                    ev.accept()
+                    # We won't get a mouseReleaseEvent for the
+                    # drag because the WM is handling it - so
+                    # save the position right after the move
+                    # finishes via a short timer.
+                    from PyQt6.QtCore import QTimer
+                    QTimer.singleShot(
+                        300, self._save_minimal_position)
+                    return
+            # Manual fallback path
             self._minimal_drag_offset = (
                 ev.globalPosition().toPoint() - self.pos())
             ev.accept()
@@ -8925,24 +9045,50 @@ class U64Streamer(QDialog):
         return 0
 
     def eventFilter(self, obj, ev):
-        """Pre-empt key events bound for the Type-line so they
-        get forwarded live to the C64 when 'Capture keys' is on.
+        """Pre-empt events on installed-on widgets before they
+        reach the widget's own handlers.
 
-        Without this filter, Qt routes printable keystrokes to
-        the QLineEdit's internal text buffer and only fires
-        returnPressed on Enter. With capture on, the user
-        expects every individual key to hit the C64 immediately
-        - this filter eats the key BEFORE the line edit sees
-        it, calls _fire_keypress, and tells Qt the event is
-        handled.
+        Two unrelated jobs handled here:
 
-        Special-case: Enter still triggers returnPressed (the
-        Send button workflow), but we also fire it as PETSCII
-        RETURN so it works the same way whether capture is on
-        or off. Tab and Backspace pass through to Qt so the
-        widget still behaves sensibly.
+        1. Type-line key forwarding when 'Capture keys' is on -
+           every keystroke goes live to the C64 instead of
+           accumulating in the QLineEdit buffer.
+
+        2. Minimal-mode window dragging - mouse events on the
+           video QLabel are converted into window-drag commands
+           on the dialog (Qt does NOT auto-propagate mouse
+           events from QLabel to its parent QDialog, so a
+           plain mousePressEvent override on the dialog never
+           sees clicks that land on the label - which is most
+           clicks because the label fills 100% of the minimal-
+           mode window). We watch for ButtonPress/MouseMove/
+           ButtonRelease/ContextMenu on the video_label here
+           and forward them to our own dialog-level handlers.
         """
         from PyQt6.QtCore import QEvent, Qt
+
+        # --- Job 2: Minimal-mode mouse forwarding ----------------
+        # Only kicks in if we're actually in minimal mode AND the
+        # event source is our video label (or any widget the
+        # method installed the filter on). In every other mode
+        # mouse handling is unchanged.
+        if (getattr(self, '_minimal_mode', False)
+                and obj is getattr(self, 'video_label', None)):
+            t = ev.type()
+            if t == QEvent.Type.MouseButtonPress:
+                self.mousePressEvent(ev)
+                return ev.isAccepted()
+            elif t == QEvent.Type.MouseMove:
+                self.mouseMoveEvent(ev)
+                return ev.isAccepted()
+            elif t == QEvent.Type.MouseButtonRelease:
+                self.mouseReleaseEvent(ev)
+                return ev.isAccepted()
+            elif t == QEvent.Type.ContextMenu:
+                self.contextMenuEvent(ev)
+                return ev.isAccepted()
+
+        # --- Job 1: Type-line key forwarding ---------------------
         if (obj is getattr(self, "ed_type", None)
                 and ev.type() == QEvent.Type.KeyPress
                 and self._host

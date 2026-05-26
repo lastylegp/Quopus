@@ -491,8 +491,39 @@ def _raise_fd_limit():
 
 def main():
     _raise_fd_limit()
+    # Load user-installed custom modules BEFORE constructing the
+    # main window. Plugins might want to register themselves under
+    # action_names that the action-button grid references right
+    # after construction (e.g. a user-defined "my_dev_shortcut"
+    # bound to F2). Discovery is best-effort: any module that
+    # fails to import is logged and skipped, never blocks startup.
+    try:
+        from quopus_lib import custom_modules
+        custom_modules.load_all()
+        n = len(custom_modules.all_modules())
+        if n:
+            print(f"[startup] loaded {n} custom module(s)")
+        errs = custom_modules.load_errors()
+        if errs:
+            print(f"[startup] {len(errs)} custom module(s) failed "
+                  f"to load - see Config -> Reload custom modules "
+                  f"for details")
+    except Exception as e:
+        print(f"[startup] custom_modules subsystem unavailable: {e}")
     app = QApplication(sys.argv)
     app.setStyle(QStyleFactory.create("Fusion"))
+
+    # Apply persisted global font (family + pointsize) BEFORE the
+    # main window is constructed so its widgets pick up the right
+    # metrics on first paint. If the user later changes the font
+    # via Settings, the same helper gets called again to live-
+    # update the running app.
+    try:
+        from quopus_lib.config import load_config, apply_app_font
+        _early_cfg = load_config()
+        apply_app_font(_early_cfg, app)
+    except Exception as e:
+        print(f"[startup] could not apply app font: {e}")
 
     # App-Identity: Name, organization, plus Window-Icon. Das Icon
     # zeigt sich in der Taskleiste, dem Alt-Tab-Switcher und im

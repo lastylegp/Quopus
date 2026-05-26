@@ -2742,12 +2742,14 @@ class _PreviewFullscreenDialog(QDialog):
                   parent=None):
         super().__init__(parent)
         self._source = source_pixmap
+        self._caption = caption
         title = caption if caption else "Preview"
         self.setWindowTitle(title)
         # Dark background everywhere - matches the preview pane
         self.setStyleSheet(
             "QDialog { background-color: #1a1a1a; }")
-        from PyQt6.QtWidgets import QVBoxLayout
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QHBoxLayout, QPushButton)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
@@ -2755,12 +2757,68 @@ class _PreviewFullscreenDialog(QDialog):
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setStyleSheet(
             "background-color: #1a1a1a;")
-        lay.addWidget(self._label)
+        lay.addWidget(self._label, stretch=1)
+        # Tiny action bar at the bottom: lets the user save the
+        # same pixmap they're looking at as PNG without having
+        # to close fullscreen and find the button in the parent
+        # dialog. Subtle styling so it doesn't compete with the
+        # picture - dark grey button on near-black background.
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(8, 4, 8, 4)
+        btn_row.addStretch(1)
+        btn_save = QPushButton("Save as PNG...")
+        btn_save.setStyleSheet(
+            "QPushButton { background-color: #333; color: #ddd; "
+            "padding: 4px 12px; border: 1px solid #555; } "
+            "QPushButton:hover { background-color: #444; }")
+        btn_save.clicked.connect(self._save_as_png)
+        btn_row.addWidget(btn_save)
+        btn_close = QPushButton("Close")
+        btn_close.setStyleSheet(
+            "QPushButton { background-color: #333; color: #ddd; "
+            "padding: 4px 12px; border: 1px solid #555; } "
+            "QPushButton:hover { background-color: #444; }")
+        btn_close.clicked.connect(self.accept)
+        btn_row.addWidget(btn_close)
+        lay.addLayout(btn_row)
         # Show maximized (preserves window chrome / close button)
         # rather than true fullscreen, which can be hard to escape
         # from on some window managers.
         self.showMaximized()
         self._rescale()
+
+    def _save_as_png(self):
+        """Save the source pixmap (NOT the scaled-to-fit one)
+        as a PNG. Uses 2x nearest-neighbor scaling so the
+        C64's chunky pixels stay sharp."""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtCore import Qt as _Qt
+        import os, re
+        cap = self._caption or "preview"
+        stem = cap.split("(")[0].strip() or "preview"
+        stem = re.sub(r'[^\w\-.]+', '_', stem).strip('_') \
+                or "preview"
+        default_path = os.path.join(
+            os.path.expanduser("~"), f"{stem}.png")
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save preview as PNG",
+            default_path,
+            "PNG Images (*.png);;All files (*)")
+        if not out_path:
+            return
+        if not out_path.lower().endswith(".png"):
+            out_path += ".png"
+        src = self._source
+        if src is None or src.isNull():
+            return
+        scaled = src.scaled(
+            src.width() * 2, src.height() * 2,
+            _Qt.AspectRatioMode.IgnoreAspectRatio,
+            _Qt.TransformationMode.FastTransformation)
+        if not scaled.save(out_path, "PNG"):
+            QMessageBox.warning(
+                self, "Save PNG",
+                f"Failed to save:\n{out_path}")
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -3055,6 +3113,30 @@ class CbmDiskDialog(QDialog):
         right_lay.setSpacing(2)
         right_lay.addWidget(self._preview_format_label)
         right_lay.addWidget(self._preview_scroll, stretch=1)
+
+        # Button bar below the preview: lets the user export the
+        # currently-shown bitmap as a PNG to anywhere on disk.
+        # Enabled state is driven by _set_preview_pixmap (sets
+        # _preview_original_pixmap) and _clear_preview (clears
+        # it). For text-only previews (SEQ PETSCII transcripts,
+        # hex peek) the button stays grey because there's
+        # nothing image-shaped to save.
+        from PyQt6.QtWidgets import QHBoxLayout, QPushButton
+        prev_btn_row = QHBoxLayout()
+        prev_btn_row.setContentsMargins(0, 0, 0, 0)
+        prev_btn_row.setSpacing(4)
+        self._btn_save_preview_png = QPushButton("Save as PNG...")
+        self._btn_save_preview_png.setToolTip(
+            "Export the currently-shown bitmap as a PNG file.\n"
+            "Useful for sharing Koala / Hi-Res / FLI etc. "
+            "previews without having to load the disk in a\n"
+            "separate viewer.")
+        self._btn_save_preview_png.clicked.connect(
+            self._save_preview_as_png)
+        self._btn_save_preview_png.setEnabled(False)
+        prev_btn_row.addWidget(self._btn_save_preview_png)
+        prev_btn_row.addStretch(1)
+        right_lay.addLayout(prev_btn_row)
 
         # Horizontal splitter: directory on the left, preview on
         # the right. Initial sizes give the directory most of
@@ -4153,6 +4235,9 @@ class CbmDiskDialog(QDialog):
             self._preview_label._interactive = False
         self._preview_label.setCursor(Qt.CursorShape.ArrowCursor)
         self._preview_label.setToolTip("")
+        # Nothing image-shaped to save - disable the PNG button.
+        if hasattr(self, '_btn_save_preview_png'):
+            self._btn_save_preview_png.setEnabled(False)
 
     def _set_preview_pixmap(self, pix: QPixmap,
                               caption: str = ""):
@@ -4178,8 +4263,101 @@ class CbmDiskDialog(QDialog):
             self._preview_label._interactive = True
         self._preview_label.setCursor(
             Qt.CursorShape.PointingHandCursor)
+        # Enable the Save-PNG button so the user can export this
+        # render to disk. We pass the caption through to the
+        # save handler via the _preview_caption attribute that
+        # is already being set above.
+        if hasattr(self, '_btn_save_preview_png'):
+            self._btn_save_preview_png.setEnabled(
+                not pix.isNull())
         self._preview_label.setToolTip(
             "Click to view fullscreen (Esc to close)")
+
+    def _save_preview_as_png(self):
+        """Export the currently-shown preview pixmap to a PNG
+        file. Triggered by the "Save as PNG..." button below
+        the preview pane.
+
+        Sensibly defaults the filename to the source-file's
+        stem + ".png" (e.g. "MOONSPIRE" -> "MOONSPIRE.png")
+        so the user just hits Enter for a quick export. The
+        save dialog opens at the LAST-used directory from
+        a previous PNG save, or the user's home if first
+        time - we stash the directory on the instance so it
+        persists for the dialog session but doesn't pollute
+        quopus.cfg.
+
+        For maximum sharability we save at 2x scale (640x400)
+        so the C64's "fat pixels" don't get blurred by image
+        viewers' bilinear scaling. A 1x save would look weird
+        on modern hi-DPI screens.
+        """
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtGui import QPixmap as _QPixmap
+        import os, re
+
+        pix = self._preview_original_pixmap
+        if pix is None or pix.isNull():
+            return
+        # Build a reasonable default filename from the caption
+        # the renderer left for the fullscreen-preview title.
+        # The caption typically looks like "FILENAME (format,
+        # N blocks)" - strip everything after the first
+        # parenthesis and any unsafe chars.
+        cap = self._preview_caption or "preview"
+        stem = cap.split("(")[0].strip() or "preview"
+        # Replace anything that would be awkward in a filename
+        # with underscore: spaces, shifted-space artifacts,
+        # punctuation. CBM file names can be wild.
+        stem = re.sub(r'[^\w\-.]+', '_', stem).strip('_') \
+                or "preview"
+        # Last-used dir defaulted to home; persisted on the
+        # instance so back-to-back exports remember the path.
+        last_dir = getattr(self, '_last_png_export_dir', None) \
+                    or os.path.expanduser("~")
+        default_path = os.path.join(last_dir, f"{stem}.png")
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save preview as PNG",
+            default_path,
+            "PNG Images (*.png);;All files (*)")
+        if not out_path:
+            return
+        # Remember directory for next time
+        try:
+            self._last_png_export_dir = os.path.dirname(out_path)
+        except Exception:
+            pass
+        # Add .png extension if user didn't type one - prevents
+        # confusing "file saved but Windows doesn't recognize it"
+        # situations on systems with hidden extensions.
+        if not out_path.lower().endswith(".png"):
+            out_path += ".png"
+        # Save at 2x nearest-neighbor scale. C64 pixel art looks
+        # awful with bilinear interpolation - FastTransformation
+        # keeps the original pixel grid intact.
+        src_w = pix.width()
+        src_h = pix.height()
+        scaled = pix.scaled(
+            src_w * 2, src_h * 2,
+            _Qt.AspectRatioMode.IgnoreAspectRatio,
+            _Qt.TransformationMode.FastTransformation)
+        if not scaled.save(out_path, "PNG"):
+            QMessageBox.warning(
+                self, "Save PNG",
+                f"Failed to save:\n{out_path}\n\n"
+                f"Check that the directory exists and is "
+                f"writable.")
+            return
+        # Quiet success - tooltip on the button updates so the
+        # user sees "where did the last save go?" without a
+        # popup interrupting their workflow.
+        try:
+            self._btn_save_preview_png.setToolTip(
+                f"Last saved to:\n{out_path}\n\n"
+                f"Click to export again.")
+        except Exception:
+            pass
 
     def _open_fullscreen_preview(self):
         """Pop up a maximized window showing the current preview
@@ -5947,7 +6125,7 @@ class _SepPngImportDialog(QDialog):
         # Hex display
         self.lbl_hex = QLabel()
         self.lbl_hex.setStyleSheet(
-            "font-family: 'Consolas', monospace; font-size: 11px; "
+            f"font-family: 'Consolas', monospace; font-size: {scaled_font_px(11)}px; "
             "padding: 4px;")
         ob_l.addWidget(self.lbl_hex)
         outer.addWidget(out_box)
@@ -6300,6 +6478,7 @@ class _SepPngImportDialog(QDialog):
 
 from dataclasses import dataclass as _dataclass, field as _field
 from typing import List as _List, Optional as _Optional
+from .config import scaled_font_px
 
 
 @_dataclass

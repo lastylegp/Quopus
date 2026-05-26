@@ -208,6 +208,29 @@ class DirModel(QAbstractTableModel):
                 return self._tagged_bg
             return None
 
+        if role == Qt.ItemDataRole.ToolTipRole:
+            # Hover tooltip: show the full filesystem path. This
+            # is most valuable for search results (where the
+            # Folder column may be cut off by narrow column
+            # width), but also useful in regular listings when
+            # very long names get truncated. The same tip works
+            # for every column so the user can hover anywhere
+            # on the row.
+            #
+            # For search-result entries we have e.source_dir
+            # set, and e.path is the absolute file path - we
+            # show both so the user sees "what is this and
+            # where does it live" at a glance. For normal
+            # listings e.source_dir is None and we just show
+            # the file's absolute path.
+            if e.source_dir:
+                # Search-results row - show search origin and
+                # filename separately so they're easy to read.
+                return (f"Name:   {e.name}\n"
+                        f"Folder: {e.source_dir}")
+            # Regular listing - the path IS the location.
+            return e.path
+
         if role == Qt.ItemDataRole.UserRole:
             return e.path
         return None

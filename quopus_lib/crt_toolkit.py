@@ -47,6 +47,7 @@ import struct
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from .config import scaled_font_px
 
 
 # Signatures we accept. Padded with spaces to 16 bytes.
@@ -6625,7 +6626,7 @@ def open_crt_toolkit(crt_or_path, parent=None):
         splash.setStyleSheet(
             "QLabel { background-color: #ffcc00;"
             " color: #000000; border: 3px solid #000000;"
-            " padding: 16px 32px; font-size: 18px;"
+            f" padding: 16px 32px; font-size: {scaled_font_px(18)}px;"
             " font-weight: bold; font-family: monospace; }")
         splash.setWindowFlags(
             Qt.WindowType.SplashScreen

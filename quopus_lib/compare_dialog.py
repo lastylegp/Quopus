@@ -32,6 +32,7 @@ from .palette import (
     C, WB_TITLEBAR_INACTIVE_QSS, INFOBAR_QSS, SCROLLBAR_QSS,
     button_qss, get_topaz_font, fmt_size,
 )
+from .config import scaled_font_px
 
 
 # Colors for diff highlighting. Soft enough not to fight with the
@@ -263,7 +264,7 @@ class CompareDialog(QDialog):
                 background-color: {C.BLACK};
                 color: {C.WHITE};
                 font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-                font-size: 12px;
+                font-size: {scaled_font_px(12)}px;
                 border: 1px solid {C.BLACK};
                 selection-background-color: {C.SELECTED};
                 selection-color: {C.SELECTED_FG};

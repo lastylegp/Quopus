@@ -36,6 +36,7 @@ from . import rclone_backend
 from .rclone_backend import (
     RcloneError, RcloneNotFoundError, RcloneRemote, RcloneEntry,
 )
+from .config import scaled_font_px
 
 
 # ---------------------------------------------------------------
@@ -309,7 +310,7 @@ class RcloneBrowserDialog(QDialog):
         header = QHBoxLayout()
         self.lbl_version = QLabel("checking rclone...")
         self.lbl_version.setStyleSheet(
-            "color: #666; font-size: 11px;")
+            f"color: #666; font-size: {scaled_font_px(11)}px;")
         header.addWidget(self.lbl_version, 1)
         self.btn_reload = QPushButton("Reload remotes")
         self.btn_reload.clicked.connect(self._refresh_remotes)
@@ -361,7 +362,7 @@ class RcloneBrowserDialog(QDialog):
             "<i>No remotes? Run <code>rclone config</code><br>"
             "in a terminal to add cloud accounts.</i>")
         self.lbl_remotes_hint.setStyleSheet(
-            "color: #888; font-size: 10px;")
+            f"color: #888; font-size: {scaled_font_px(10)}px;")
         self.lbl_remotes_hint.setWordWrap(True)
         left_lay.addWidget(self.lbl_remotes_hint)
 

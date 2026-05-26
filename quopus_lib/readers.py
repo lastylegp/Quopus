@@ -19,6 +19,7 @@ from .palette import (
 )
 from .encodings import amiga_to_unicode, cp437_to_unicode, parse_ansi, parse_petscii
 from .petscii_tables import petscii_byte_to_unicode
+from .config import scaled_font_px
 
 
 def _html_escape_ch(ch):
@@ -487,7 +488,7 @@ class TextReader(QDialog):
                 background-color: {C.ACTIVE_BG};
                 color: {C.ACTIVE_FG};
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 14px;
+                font-size: {scaled_font_px(14)}px;
                 font-weight: bold;
                 padding: 14px 28px;
                 border: 2px solid {C.BLACK};
@@ -700,7 +701,8 @@ class TextReader(QDialog):
         self.text_plain.setFont(f)
 
     def _auto_fit_font_size(self, cols, rows=None, char_factor=0.60,
-                            force_fit_height=False):
+                            force_fit_height=False,
+                            apply_global_scale=True):
         """
         Return font size so `cols` columns fit the current viewport width.
 
@@ -709,6 +711,13 @@ class TextReader(QDialog):
           to let the user scroll).
         - rows <= 60: constrain by height for readability.
         - longer: only width, user scrolls vertically.
+        - apply_global_scale=True (default): multiply the
+          viewport-derived size by the user's global font scale.
+          For NFO/ANSI content this means the global Settings >
+          Font scale slider affects readability the same way it
+          affects the rest of the app. Set to False where you
+          want the size strictly viewport-driven (e.g. PETSCII
+          bitmap rendering where the pixel size is what matters).
         """
         if getattr(self, '_auto_fit', True) is False:
             return getattr(self, '_manual_font_size', 16)
@@ -746,7 +755,24 @@ class TextReader(QDialog):
         else:
             fs = fs_w
 
-        return max(8, min(48, fs))
+        fs = max(8, min(48, fs))
+
+        # Multiply by the user's global font scale so NFO / ANSI
+        # readers get bigger when the Settings dialog scale goes
+        # up. Doing this AFTER the viewport clamp means content
+        # may overflow horizontally at 150%+, which is fine -
+        # user explicitly asked for bigger text and accepts the
+        # trade-off (horizontal scroll). PETSCII bitmap path
+        # passes apply_global_scale=False to opt out.
+        if apply_global_scale:
+            try:
+                from .config import current_font_scale
+                scale = current_font_scale()
+                fs = max(8, round(fs * scale))
+            except Exception:
+                pass
+
+        return fs
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1026,7 +1052,14 @@ class TextReader(QDialog):
                 h = result["height"]
                 sbg = result["screen_bg"]
                 use_pua = has_c64_pro_mono()
-                c64f = get_c64_font(14)
+                # Use unscaled C64 font here - PETSCII renders to
+                # a pixmap with cell_size derived from viewport,
+                # so the family name matters but the point size
+                # would be ignored anyway. Explicitly opt out of
+                # the global font scale to make this intent
+                # crystal clear: user said PETSCII should NOT
+                # follow the global scale setting.
+                c64f = get_c64_font(14, scaled=False)
                 # Choose a cell size that fits the viewport. PETSCII cells
                 # are square so width and height get the same value.
                 vp = self.bitmap_scroll.viewport()
@@ -1059,6 +1092,35 @@ class TextReader(QDialog):
             self.text_plain.setPlainText(f"<decode error: {e}>")
             self._show_plain()
             self.lbl_status.setText(f" Error: {e} ")
+
+    def refresh_fonts(self):
+        """Re-render the current content with the new global
+        font scale. Called by the main window's
+        _refresh_dynamic_stylesheets after the user changes
+        scale in the Appearance settings.
+
+        Plain-text modes (Topaz, UTF-8, Latin-1) pick up the
+        scale via get_topaz_font(_manual_font_size) which now
+        applies the global scale internally.
+
+        NFO and ANSI HTML modes re-render with their auto-fit
+        font size multiplied by the new global scale (see
+        _auto_fit_font_size's apply_global_scale path).
+
+        PETSCII bitmap stays unchanged - the C64 cells are
+        viewport-pixel-sized and explicitly opt out of the
+        global font scale (see the get_c64_font(scaled=False)
+        call in the PETSCII branch).
+        """
+        try:
+            # The cleanest refresh is to re-trigger the existing
+            # render pipeline with the same encoding selection.
+            # _reload reads the file again, but that's a cheap
+            # operation (text files are small) and avoids us
+            # duplicating the dispatch logic.
+            self._reload(self.cb_enc.currentText())
+        except Exception as e:
+            print(f"[TextReader] refresh_fonts failed: {e}")
 
 
 class _HexEditWidget(QPlainTextEdit):
@@ -1504,7 +1566,7 @@ class HexReader(QDialog):
                 background-color: {C.BLACK};
                 color: {C.WHITE};
                 font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-                font-size: 12px;
+                font-size: {scaled_font_px(12)}px;
                 border: 1px solid {C.BLACK};
                 selection-background-color: {C.SELECTED};
                 selection-color: {C.SELECTED_FG};

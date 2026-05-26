@@ -32,6 +32,7 @@ from .palette import (
 )
 from .dirmodel import DirModel, DirEntry, TaggedItemDelegate
 from .readers import TextReader, HexReader
+from .config import scaled_font_px
 
 
 class _DropSourceShim:
@@ -375,7 +376,7 @@ class FileLister(QWidget):
                 padding: 2px 6px;
                 border: 1px solid {C.BLACK};
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 11px;
+                font-size: {scaled_font_px(11)}px;
                 font-weight: bold;
             }}
             QTreeView {{ show-decoration-selected: 1; }}
@@ -1120,7 +1121,7 @@ class FileLister(QWidget):
             f"QPlainTextEdit {{ background-color: {C.BLACK}; "
             f"color: {C.WHITE}; "
             f"font-family: 'Topaz','Courier New',monospace; "
-            f"font-size: 11px; padding: 4px; }}")
+            f"font-size: {scaled_font_px(11)}px; padding: 4px; }}")
         lay.addWidget(edit, 1)
         bb = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -2714,3 +2715,69 @@ class FileLister(QWidget):
             param = text or None
 
         w.actions.dispatch(action_name, param)
+
+    def refresh_fonts(self):
+        """Re-apply scale-aware fonts to widgets that get their
+        font from setFont() rather than CSS. Called by the
+        Settings dialog when the user changes scale or
+        pointsize-override.
+
+        This covers:
+          - The main QTreeView (file listing) - the visible part
+            with filenames, sizes, dates, folder annotations
+          - The path edit at the top
+          - The info bar at the bottom
+
+        Inline stylesheets that use scaled_font_px() get
+        refreshed by the dialog's separate unpolish/polish pass
+        on every top-level widget, not here.
+        """
+        from .palette import get_topaz_font
+        try:
+            self.view.setFont(get_topaz_font(11))
+            # Force the model to re-emit dataChanged so the
+            # uniform-row-height cache picks up the new metrics.
+            self.view.viewport().update()
+            self.view.scheduleDelayedItemsLayout()
+        except Exception:
+            pass
+        # The QTreeView's header is a separate widget that
+        # inherits the stylesheet font. Trigger a polish
+        # explicitly so the new scaled_font_px value takes
+        # effect.
+        try:
+            hdr = self.view.header()
+            hdr.style().unpolish(hdr)
+            hdr.style().polish(hdr)
+            hdr.update()
+        except Exception:
+            pass
+        # Same for the inline stylesheet on the TreeView itself
+        # - rebuild it so scaled_font_px() re-evaluates.
+        try:
+            self._reapply_view_stylesheet()
+        except AttributeError:
+            # Some legacy lister builds might not have this
+            # helper - silently skip
+            pass
+
+    def _reapply_view_stylesheet(self):
+        """Rebuild the QTreeView's inline stylesheet so the
+        embedded scaled_font_px(N) calls re-evaluate against
+        the current scale factor. Call this from refresh_fonts."""
+        from .palette import LISTER_QSS, SCROLLBAR_QSS, C
+        from .config import scaled_font_px
+        self.view.setStyleSheet(LISTER_QSS + SCROLLBAR_QSS + f"""
+            QHeaderView::section {{
+                background-color: {C.WB_GREY};
+                color: {C.BLACK};
+                padding: 2px 6px;
+                border: 1px solid {C.BLACK};
+                font-family: "Topaz-8","Topaz","Courier New",monospace;
+                font-size: {scaled_font_px(11)}px;
+                font-weight: bold;
+            }}
+            QTreeView {{ show-decoration-selected: 1; }}
+            QTreeView::item {{ border: 0; padding: 0 2px; }}
+            QTreeView::branch {{ background: transparent; }}
+        """)

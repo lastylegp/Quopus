@@ -42,6 +42,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QMessageBox, QFileDialog,
 )
+from .config import scaled_font_px
 
 
 # ---------------------------------------------------------------------
@@ -635,7 +636,7 @@ class BasicEditorDialog(QDialog):
             "&middot; repeat: <code>{5 SPACE}</code>")
         help_lbl.setStyleSheet(
             "padding: 3px 6px; background: #303030; color: #ccc; "
-            "font-size: 10px;")
+            f"font-size: {scaled_font_px(10)}px;")
         help_lbl.setWordWrap(True)
         outer.addWidget(help_lbl)
 

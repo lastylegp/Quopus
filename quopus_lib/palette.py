@@ -1,6 +1,7 @@
 """Colors, stylesheets, font loading from ./fonts/."""
 from pathlib import Path
 from PyQt6.QtGui import QFont, QFontDatabase
+from .config import scaled_font_px
 
 
 class C:
@@ -145,7 +146,22 @@ def load_bundled_fonts(fonts_dir: Path):
     return families
 
 
-def get_topaz_font(size=11):
+def get_topaz_font(size=11, scaled=True):
+    """Return a QFont in the Topaz family at the given point
+    size. If scaled is True (default), the size is multiplied
+    by the user's app font scale factor - so a get_topaz_font(11)
+    at 150% scale returns a 16-17pt font.
+
+    Pass scaled=False if you specifically want the literal
+    size (e.g. when the size is already user-controlled like
+    in TextReader's +/- zoom).
+    """
+    if scaled:
+        try:
+            from .config import scaled_font_px
+            size = scaled_font_px(size)
+        except Exception:
+            pass
     for name in ("Topaz-8", "Topaz New", "Topaz", "TopazPlus a1200 v1.0"):
         f = QFont(name)
         if f.exactMatch() or name in _loaded_fonts:
@@ -158,7 +174,15 @@ def get_topaz_font(size=11):
     return f
 
 
-def get_c64_font(size=14):
+def get_c64_font(size=14, scaled=True):
+    """Return a QFont in a C64 family. See get_topaz_font for
+    the `scaled` parameter behavior."""
+    if scaled:
+        try:
+            from .config import scaled_font_px
+            size = scaled_font_px(size)
+        except Exception:
+            pass
     for name in ("C64 Pro Mono", "C64 Pro", "C64 Elite Mono",
                  "PetMe64", "PetMe2Y", "Unscii", "Unscii 16"):
         f = QFont(name)
@@ -170,6 +194,39 @@ def get_c64_font(size=14):
     f.setPointSize(size)
     f.setStyleHint(QFont.StyleHint.TypeWriter)
     return f
+
+
+def get_mono_font(size=11, scaled=True):
+    """Return the system default monospace font (Cascadia,
+    Consolas, DejaVu Mono, Menlo, depending on platform) at
+    the given point size.
+
+    Used in the U64 streamer's hex/asm tables, the cell-editor
+    line edit, and anywhere a monospace font is wanted but
+    we don't care which specific family.
+
+    With scaled=True (default) the size is multiplied by the
+    user's app font scale - so the streamer's hex view, type
+    line, and disassembly all grow/shrink with the global
+    setting.
+    """
+    if scaled:
+        try:
+            from .config import scaled_font_px
+            size = scaled_font_px(size)
+        except Exception:
+            pass
+    try:
+        from PyQt6.QtGui import QFontDatabase
+        f = QFontDatabase.systemFont(
+            QFontDatabase.SystemFont.FixedFont)
+        f.setPointSize(size)
+        return f
+    except Exception:
+        f = QFont("Courier New")
+        f.setPointSize(size)
+        f.setStyleHint(QFont.StyleHint.TypeWriter)
+        return f
 
 
 def has_c64_pro_mono():
@@ -189,7 +246,7 @@ def button_qss(color_key):
         border: 1px solid {C.BLACK};
         padding: 1px 4px;
         font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-        font-size: 12px;
+        font-size: {scaled_font_px(12)}px;
         font-weight: bold;
         min-height: 18px;
     }}
@@ -205,7 +262,7 @@ QLabel {{
     background-color: {C.WB_BLUE};
     color: {C.WHITE};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 12px;
+    font-size: {scaled_font_px(12)}px;
     font-weight: bold;
     padding: 2px 8px;
     border-top: 1px solid {C.WB_BLUE_LT};
@@ -221,7 +278,7 @@ QLabel {{
     background-color: {C.ACTIVE_BG};
     color: {C.ACTIVE_FG};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 12px;
+    font-size: {scaled_font_px(12)}px;
     font-weight: bold;
     padding: 2px 8px;
     border-top: 1px solid #ff6060;
@@ -236,7 +293,7 @@ QLabel {{
     background-color: {C.WB_GREY};
     color: {C.BLACK};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 12px;
+    font-size: {scaled_font_px(12)}px;
     font-weight: bold;
     padding: 2px 8px;
     border-bottom: 1px solid {C.BLACK};
@@ -248,7 +305,7 @@ QListView {{
     background-color: {C.LISTER_BG};
     color: {C.LISTER_FG};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 12px;
+    font-size: {scaled_font_px(12)}px;
     border: 1px solid {C.BLACK};
     selection-background-color: {C.SELECTED};
     selection-color: {C.SELECTED_FG};
@@ -263,7 +320,7 @@ QLineEdit {{
     background-color: {C.WHITE};
     color: {C.BLACK};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 12px;
+    font-size: {scaled_font_px(12)}px;
     border: 1px solid {C.BLACK};
     padding: 1px 3px;
 }}
@@ -274,7 +331,7 @@ QLabel {{
     background-color: {C.WB_GREY};
     color: {C.BLACK};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 11px;
+    font-size: {scaled_font_px(11)}px;
     font-weight: bold;
     padding: 1px 6px;
     border-top: 1px solid {C.WB_GREY_DK};
@@ -289,7 +346,7 @@ QLabel {{
     background-color: {C.WB_BLUE};
     color: {C.WHITE};
     font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: 12px;
+    font-size: {scaled_font_px(12)}px;
     font-weight: bold;
     padding: 2px 6px;
     border: 1px solid {C.BLACK};

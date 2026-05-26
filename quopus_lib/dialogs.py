@@ -12,6 +12,7 @@ from .palette import (
     C, WB_TITLEBAR_INACTIVE_QSS, SCREEN_TITLEBAR_QSS, INFOBAR_QSS,
     SCROLLBAR_QSS, BUTTON_STYLES, button_qss, get_topaz_font
 )
+from .config import scaled_font_px
 
 
 # ============================================================
@@ -174,7 +175,7 @@ class ButtonConfigDialog(QDialog):
             "%d=other-side dir  ")
         hint.setStyleSheet(
             f"QLabel {{ background-color: {C.WB_GREY}; color: #555; "
-            f"font-size: 10px; padding: 2px 6px; }}")
+            f"font-size: {scaled_font_px(10)}px; padding: 2px 6px; }}")
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -499,7 +500,7 @@ class ButtonConfigDialog(QDialog):
                 f"QPushButton {{ background-color: {bg}; color: {fg}; "
                 f"border: 1px solid #000000; padding: 2px 4px; "
                 f"font-family: 'Topaz','Courier New',monospace; "
-                f"font-size: 11px; text-align: center; }}"
+                f"font-size: {scaled_font_px(11)}px; text-align: center; }}"
             )
         refresh()
         btn._refresh = refresh
@@ -534,7 +535,7 @@ class ButtonConfigDialog(QDialog):
                 f"QPushButton {{ background-color: {bg}; color: {fg}; "
                 f"border: 1px solid #000000; "
                 f"font-family: 'Topaz','Courier New',monospace; "
-                f"font-weight: bold; font-size: 11px; }}"
+                f"font-weight: bold; font-size: {scaled_font_px(11)}px; }}"
                 f"QPushButton:hover {{ border: 2px solid #ffff00; }}"
             )
             def pick(_=None, n=name):
@@ -992,7 +993,7 @@ class DirReverseDialog(QDialog):
             QPlainTextEdit {{
                 background-color: {C.BLACK}; color: {C.WHITE};
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 12px; border: 1px solid {C.BLACK};
+                font-size: {scaled_font_px(12)}px; border: 1px solid {C.BLACK};
             }}
             {SCROLLBAR_QSS}
         """)

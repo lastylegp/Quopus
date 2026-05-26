@@ -15,6 +15,7 @@ from .palette import (
     WB_TITLEBAR_INACTIVE_QSS, INFOBAR_QSS,
 )
 from .file_assoc import DEFAULT_ASSOC
+from .config import scaled_font_px
 
 
 INTERNAL_TYPES = ["auto", "text", "image", "archive", "hex",
@@ -63,7 +64,7 @@ class FileAssocDialog(QDialog):
             QListWidget {{
                 background-color: {C.WHITE}; color: {C.BLACK};
                 font-family: "Topaz-8","Courier New",monospace;
-                font-size: 12px;
+                font-size: {scaled_font_px(12)}px;
                 border: 1px solid {C.BLACK};
                 selection-background-color: {C.SELECTED};
                 selection-color: {C.WHITE};
@@ -182,7 +183,7 @@ class FileAssocDialog(QDialog):
             "  Hint: use %f where the file path should go. "
             "If omitted, it's appended as the last argument.")
         hint.setStyleSheet(
-            f"QLabel {{ color: #444; font-size: 10px; }}")
+            f"QLabel {{ color: #444; font-size: {scaled_font_px(10)}px; }}")
         hint.setWordWrap(True)
         form.addRow("", hint)
 

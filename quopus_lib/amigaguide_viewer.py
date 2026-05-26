@@ -38,6 +38,7 @@ from .palette import (
     C, WB_TITLEBAR_INACTIVE_QSS, INFOBAR_QSS, SCROLLBAR_QSS,
     button_qss, get_topaz_font,
 )
+from .config import scaled_font_px
 
 
 # =====================================================================
@@ -433,7 +434,7 @@ class AmigaGuideViewer(QDialog):
             QTextBrowser {{
                 background-color: #000000; color: #cccccc;
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 13px;
+                font-size: {scaled_font_px(13)}px;
                 border: 1px solid {C.BLACK};
                 padding: 6px;
             }}
@@ -480,7 +481,7 @@ class AmigaGuideViewer(QDialog):
         # Wrap so the body has known background
         html_full = (
             f'<body style="background-color:#000000;color:#cccccc;'
-            f'font-family:Topaz,Courier New,monospace;font-size:13px;">'
+            f'font-family:Topaz,Courier New,monospace;font-size: {scaled_font_px(13)}px;">'
             f'{html}</body>'
         )
         self.browser.setHtml(html_full)

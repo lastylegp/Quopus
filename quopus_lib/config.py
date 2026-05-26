@@ -320,6 +320,33 @@ DEFAULT_CONFIG = {
     "text_reader_font_size": 11,
     "text_reader_fg": "#FFFFFF",
     "text_reader_bg": "#000000",
+    # Global UI font scaling. The app has dozens of stylesheets
+    # with hardcoded font sizes (font-size: 11px;) for the
+    # Workbench/Amiga look. Instead of letting QApplication.setFont
+    # try to override them (which doesn't work because inline CSS
+    # wins over QApplication font), we route every stylesheet
+    # construction through scaled_font_px() which multiplies a
+    # base size by the user's scale factor.
+    #
+    # app_font_scale_percent:
+    #   100 = original sizes (11px stays 11px)
+    #   150 = "everything 50% bigger" (11px becomes ~17px)
+    #   75  = "denser" (11px becomes ~8px)
+    # The valid range is 50..300.
+    #
+    # app_font_pointsize_override:
+    #   If > 0, this overrides the *base size* for the most-common
+    #   "body text" stylesheet category (the 11px ones). The %
+    #   scale still applies on top - so override=14 plus
+    #   scale=150% gives 21px for those entries. Set to 0 to use
+    #   the per-stylesheet original base.
+    "app_font_scale_percent": 100,
+    "app_font_pointsize_override": 0,
+    # Kept for backwards compatibility - was the previous (broken)
+    # global app font system. apply_app_font still honors family
+    # for QApplication.setFont, which DOES affect widgets without
+    # their own stylesheet. Empty = platform default.
+    "app_font_family": "",
     # Lister Size-column display mode:
     #   "bytes"  - human readable (4K, 1.2M, ...)  default
     #   "blocks" - C64 disk blocks (256B = 1 block, CBM DOS)
@@ -336,6 +363,12 @@ DEFAULT_CONFIG = {
     # default location: <quopus_project>/screenshots/. An absolute
     # path overrides it. The streamer auto-creates the folder.
     "u64_screenshot_dir": "",
+    # Video recording format for the streamer's Rec button:
+    #   "mp4"     - H.264 via ffmpeg (requires ffmpeg on PATH)
+    #   "png_seq" - one PNG file per frame in a per-capture folder
+    # The streamer auto-falls-back to png_seq if mp4 is selected
+    # but ffmpeg is missing. Toggleable via right-click on Rec.
+    "u64_record_format": "mp4",
 }
 
 
@@ -385,3 +418,197 @@ def save_config(cfg):
             json.dump(cfg, f, indent=2)
     except Exception as e:
         print(f"Config save error: {e}")
+
+
+def apply_app_font(cfg, app=None):
+    """Apply the global font settings (family + scale) to the
+    running QApplication. Called at startup and whenever the
+    user changes font settings via the Settings dialog.
+
+    Three things happen here:
+      1. The QApplication base font family/size is set so that
+         every widget WITHOUT its own stylesheet picks up the
+         new look.
+      2. The pointsize is the app default (10pt) multiplied by
+         the user's scale factor.
+      3. The cfg-attached _font_scale is updated so that any
+         later calls to scaled_font_px() see the new value.
+
+    Stylesheets with hardcoded font-size: Npx; need to use
+    scaled_font_px(N) to participate in scaling - that's done
+    in the per-widget refactor.
+
+    Returns True on success.
+    """
+    try:
+        from PyQt6.QtGui import QFont
+        from PyQt6.QtWidgets import QApplication
+    except ImportError:
+        return False
+    if app is None:
+        app = QApplication.instance()
+    if app is None:
+        return False
+    family = (cfg.get("app_font_family") or "").strip()
+    try:
+        scale = int(cfg.get("app_font_scale_percent", 100))
+    except (TypeError, ValueError):
+        scale = 100
+    scale = max(50, min(300, scale))
+    # The QApplication base size: scale the platform default 10pt
+    # by the user's percentage. This affects every widget that
+    # DOESN'T have its own font-size in its stylesheet.
+    base_pt = max(6, min(40, round(10 * scale / 100)))
+    if family:
+        font = QFont(family, base_pt)
+    else:
+        # Inherit platform default family, just resize.
+        font = app.font()
+        font.setPointSize(base_pt)
+    app.setFont(font)
+    return True
+
+
+def current_font_scale(cfg=None):
+    """Return the active scale factor as a float multiplier
+    (1.0 = no scaling, 1.5 = 50% bigger). Used by stylesheet
+    builders that need to size something proportionally.
+
+    Reading lazily from the LIVE config means a scale change
+    via the Settings dialog takes effect at the next paint
+    without explicit propagation.
+
+    If cfg is None we look up the singleton via the lazy
+    import (so this can be called from modules that don't
+    already have a config reference handy).
+    """
+    if cfg is None:
+        # Lazy: try to find the active config without forcing
+        # a circular import. The main window stashes its cfg
+        # on the QApplication for exactly this purpose.
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                cfg = getattr(app, '_quopus_cfg', None)
+        except Exception:
+            cfg = None
+    if cfg is None:
+        return 1.0
+    try:
+        pct = int(cfg.get("app_font_scale_percent", 100))
+    except (TypeError, ValueError):
+        return 1.0
+    pct = max(50, min(300, pct))
+    return pct / 100.0
+
+
+def scaled_font_px(base_px, cfg=None):
+    """Multiply a base pixel size by the current scale factor
+    and return an integer. Use this in every stylesheet that
+    has a font-size: Npx; line.
+
+    Example:
+        ssheet = f"QLabel {{ font-size: {scaled_font_px(11)}px; }}"
+
+    The pointsize-override config key kicks in here too: if
+    set (>0) AND the requested base is one of the "body text"
+    sizes (10/11/12), the override replaces the base. Then
+    the percentage scale is applied. This lets the user say
+    "all body text should be 14pt as my new baseline, with
+    +25% scaling on top of that" if they want.
+    """
+    scale = current_font_scale(cfg)
+    # Pointsize-override: only kicks in for body-text-ish base
+    # sizes (10..12 px). Larger sizes (headings 13/14/18/22)
+    # keep their relative differentiation - we don't want the
+    # user's override to flatten the visual hierarchy.
+    if cfg is None:
+        try:
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                cfg = getattr(app, '_quopus_cfg', None)
+        except Exception:
+            cfg = None
+    if cfg is not None:
+        try:
+            override = int(cfg.get("app_font_pointsize_override", 0))
+        except (TypeError, ValueError):
+            override = 0
+        if override > 0 and 10 <= base_px <= 12:
+            base_px = override
+    return max(6, round(base_px * scale))
+
+
+def refresh_all_widgets_font(app=None):
+    """Force every widget in the app to re-evaluate its
+    stylesheet so font-size changes take effect without a
+    restart. Qt caches computed styles; the official way
+    to invalidate that cache is unpolish/polish via the
+    QStyle.
+
+    Called from the Settings dialog after the user clicks
+    Apply or OK.
+
+    Note: this only refreshes the GLOBAL stylesheet. Inline
+    setStyleSheet() calls on individual widgets get a separate
+    refresh path - we set the same string again, which Qt
+    treats as 'might have new variables, re-parse'. That
+    only works if the widget cooperates by calling a refresh
+    helper from the main window - search for
+    _refresh_dynamic_stylesheets() to see the participating
+    list.
+    """
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except ImportError:
+        return
+    if app is None:
+        app = QApplication.instance()
+    if app is None:
+        return
+    # Re-apply the global stylesheet (if any was set) -
+    # triggers a full restyle.
+    cur = app.styleSheet()
+    if cur:
+        app.setStyleSheet("")
+        app.setStyleSheet(cur)
+    # Tell every top-level widget to re-render. This propagates
+    # to all child widgets and re-evaluates their inline
+    # stylesheets. We use unpolish/polish via the QStyle which
+    # is the documented way to invalidate computed style.
+    for w in app.allWidgets():
+        try:
+            w.style().unpolish(w)
+            w.style().polish(w)
+            w.update()
+        except Exception:
+            pass
+    # Last but not least: call the participating-widget refresh
+    # hook on the main window so it can rebuild its dynamic
+    # stylesheets that depend on scale (lister buttons,
+    # action-button grid, statusbar, etc), AND call
+    # refresh_fonts() directly on any top-level dialog that has
+    # one (TextReader, MultiRename, BasicEditor, etc.).
+    for w in app.topLevelWidgets():
+        # Main window's bulk refresh first - it can re-style
+        # many child widgets internally.
+        refresh = getattr(w, '_refresh_dynamic_stylesheets', None)
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception as e:
+                print(f"[font refresh] {type(w).__name__} "
+                      f"refresh failed: {e}")
+        # Then dialog-level refresh for anything sitting at the
+        # top level (TextReader is a QDialog, not a QMainWindow).
+        # We only call refresh_fonts() on widgets that explicitly
+        # define it, so the lookup is safe on arbitrary widgets.
+        refresh_fonts = getattr(w, 'refresh_fonts', None)
+        if callable(refresh_fonts):
+            try:
+                refresh_fonts()
+            except Exception as e:
+                print(f"[font refresh] {type(w).__name__} "
+                      f".refresh_fonts() failed: {e}")

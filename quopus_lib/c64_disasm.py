@@ -3806,6 +3806,7 @@ def apply_render_data(render_data, document):
 
 import hashlib as _hashlib
 import pickle as _pickle
+from .config import scaled_font_px
 
 
 def _cache_key(file_bytes, show_illegal):
@@ -3892,7 +3893,7 @@ def lines_to_html(lines: list) -> str:
            'html,body{margin:0;padding:0;background:#000;color:#dddddd;}'
            'pre{margin:0;padding:0;'
            'font-family:"Topaz-8","Cascadia Mono","Consolas","Courier New",monospace;'
-           'font-size:13px;line-height:1.0;}'
+           f'font-size: {scaled_font_px(13)}px;line-height:1.0;}}'
            'a.j{color:#7faaff;text-decoration:underline;}'
            'a.j:hover{color:#ffff80;}'
            'span.op{color:#ffaa44;}'
@@ -4364,7 +4365,7 @@ class C64DisasmViewer(QDialog):
         self._notice.setStyleSheet(
             "QLabel { background-color: #ffcc00; color: #000000;"
             " border: 2px solid #000000; padding: 12px 24px;"
-            " font-size: 14px; font-weight: bold; }")
+            f" font-size: {scaled_font_px(14)}px; font-weight: bold; }}")
         self._notice.adjustSize()
         # Center the notice label over the splitter area
         self._notice.move(
@@ -4655,7 +4656,7 @@ class C64DisasmViewer(QDialog):
         addr_row.addWidget(addr_edit)
         addr_help = _L("(can be outside the original PRG range; "
                         "file will be extended with $00 padding)")
-        addr_help.setStyleSheet("color: #000000; font-size: 11px;")
+        addr_help.setStyleSheet(f"color: #000000; font-size: {scaled_font_px(11)}px;")
         addr_row.addWidget(addr_help)
         addr_row.addStretch()
         v.addLayout(addr_row)
@@ -4766,7 +4767,7 @@ class C64DisasmViewer(QDialog):
             "Origin:  *=$0801                  (or:  .org $0801)\n"
             "Data:    .byte $01, $02, 'A'      .word $1234, label   .text \"hi\"\n"
             "Modifiers: <expr (lowbyte), >expr (highbyte), * (current pc)")
-        asm_help.setStyleSheet("color: #000000; font-size: 11px;")
+        asm_help.setStyleSheet(f"color: #000000; font-size: {scaled_font_px(11)}px;")
         av.addWidget(asm_help)
         tabs.addTab(asm_tab, "Assembly")
 
@@ -5117,7 +5118,7 @@ class C64DisasmViewer(QDialog):
             "  VICE w/ autostart prg: -autostart {file}\n"
             "  Hoxs64:  {file}\n"
             "  CCS64:   {file} -fullscreen")
-        help_lbl.setStyleSheet("color: #000000; font-size: 11px;")
+        help_lbl.setStyleSheet(f"color: #000000; font-size: {scaled_font_px(11)}px;")
         form.addRow(help_lbl)
 
         v.addLayout(form)
@@ -5598,7 +5599,7 @@ def show_c64_emu_config_dialog(parent, config, save_callback=None):
         "VICE is older\nthan 3.5 - the binary monitor was introduced "
         "in that version. Update VICE\nfor live memory dump support, "
         "or drop the option to just autostart the file.")
-    help_lbl.setStyleSheet("color: #000000; font-size: 11px;")
+    help_lbl.setStyleSheet(f"color: #000000; font-size: {scaled_font_px(11)}px;")
     form.addRow(help_lbl)
     v.addLayout(form)
 

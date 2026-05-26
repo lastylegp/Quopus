@@ -42,6 +42,7 @@ from .palette import (
     C, button_qss, SCROLLBAR_QSS,
     WB_TITLEBAR_INACTIVE_QSS, INFOBAR_QSS,
 )
+from .config import scaled_font_px
 
 
 CASE_MODES = ["unchanged", "UPPER", "lower", "First cap", "Each Word"]
@@ -162,7 +163,7 @@ class MultiRenameDialog(QDialog):
             "[YMD] today's date, [Yf]/[Mf]/[Df] file mtime y/m/d, "
             "[hms] now time, [P] parent folder  ")
         tok_hint.setStyleSheet(
-            f"QLabel {{ color: #444; font-size: 10px; padding: 2px; }}")
+            f"QLabel {{ color: #444; font-size: {scaled_font_px(10)}px; padding: 2px; }}")
         tok_hint.setWordWrap(True)
         form.addRow("", tok_hint)
         root.addWidget(grp_tpl)
@@ -231,7 +232,7 @@ class MultiRenameDialog(QDialog):
             QTreeWidget {{
                 background-color: {C.LISTER_BG}; color: {C.LISTER_FG};
                 font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: 12px;
+                font-size: {scaled_font_px(12)}px;
                 border: 1px solid {C.BLACK};
                 selection-background-color: {C.SELECTED};
                 selection-color: {C.WHITE};
