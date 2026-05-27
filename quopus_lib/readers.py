@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII

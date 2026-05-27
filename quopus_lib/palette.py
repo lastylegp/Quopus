@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """Colors, stylesheets, font loading from ./fonts/."""
 from pathlib import Path
 from PyQt6.QtGui import QFont, QFontDatabase

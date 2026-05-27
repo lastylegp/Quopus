@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """
 cbmfiles - Commodore 8-bit disk image reader, viewer, and extractor.
 

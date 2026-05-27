@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 20:14
 """Action dispatcher - uses selected_or_tagged for all operations."""
 import os
 import platform
@@ -63,8 +64,34 @@ class ActionDispatcher:
           1. Built-in act_<name> method on this class
           2. User custom module from custom_modules/ directory
           3. "Unknown" status message
+
+        Param extension filter: if the param contains a token of
+        the form `{file|ext1,ext2,...}`, we first check that
+        every selected file has one of the allowed extensions
+        before running the action. If any file doesn't match,
+        we show a warning and skip the action entirely. After
+        the check the token is rewritten to `{file}` so action
+        handlers that don't know about the filter syntax see
+        the canonical form.
+
+        Examples:
+          {file|crt,prg}   -> only run if all selected files
+                              end with .crt or .prg
+          {file|nfo}       -> only run on .nfo files
+          {file}           -> no filter (legacy behavior)
         """
         src, dst = self._active()
+        # ----- Extension filter check ---------------------------
+        # Parse `{file|ext1,ext2}` tokens out of param. We only
+        # need the first match for the gate - if there are
+        # multiple {file|...} tokens with conflicting filters,
+        # the FIRST one wins (consistent failure mode).
+        param, extfilter_ok = self._check_param_ext_filter(
+            action, param, src)
+        if not extfilter_ok:
+            # User got a warning popup; abort the dispatch.
+            return
+        # --------------------------------------------------------
         # Stash on self so action methods can pull these out without
         # us having to change every act_*'s signature. Cleared after
         # the dispatch finishes so a later button click that doesn't
@@ -93,6 +120,134 @@ class ActionDispatcher:
             QMessageBox.critical(self.w, "Quopus", f"Action failed: {e}")
         finally:
             self._current_opts = {}
+
+    def _check_param_ext_filter(self, action, param, src):
+        """Parse `{file|ext1,ext2,...}` tokens out of param.
+
+        Returns (rewritten_param, ok_to_proceed).
+
+        Behavior:
+          - param is None or no `{file|...}` token present:
+            returns (param, True) unchanged
+          - selection is empty: returns (param, True) - the
+            action itself will deal with empty selection (some
+            actions handle the no-selection case via a file
+            picker dialog, others are no-ops, we don't second-
+            guess them here)
+          - any selected file doesn't match: shows a warning
+            message with the offending filename + allowed
+            extensions, returns (param, False)
+          - all selected files match: returns the param with
+            `{file|ext1,ext2}` rewritten to `%f` so down-stream
+            handlers (act_run, act_shell, act_external_script,
+            act_execute_command) substitute it correctly through
+            _substitute_tokens. We rewrite to `%f` not `{file}`
+            because the existing token system only knows
+            `%`-style tokens.
+
+        The token is case-INSENSITIVE in the keyword: both
+        `{file|...}` and `{FILE|...}` are recognized. Extensions
+        inside are case-insensitive too and the leading dot is
+        optional, so all of these match a .crt file:
+            {file|crt}
+            {FILE|.crt}
+            {File|CRT}
+            {file|crt,prg}
+        """
+        if not param or not isinstance(param, str):
+            return param, True
+        # Quick reject if no extended-token syntax is present
+        # (case-insensitive). The lower-case `in` check is the
+        # cheap path; we only run the regex when needed.
+        if "{file|" not in param.lower():
+            return param, True
+        import re
+        # Match {file|<csv of extensions>}. Allowed chars in an
+        # extension: dot, letters, digits. Anything weirder will
+        # fail to match and the original {file|...} stays in
+        # the param literally - which is a hint to the user that
+        # they have a typo.
+        # The (?i) flag makes the whole pattern case-insensitive
+        # so {FILE|...} works the same as {file|...}.
+        pattern = re.compile(
+            r"(?i)\{file\|([A-Za-z0-9.,]+)\}")
+        match = pattern.search(param)
+        if not match:
+            return param, True
+        # Parse the comma list into a normalized set of
+        # extensions, all lowercase, all with leading dot.
+        raw = match.group(1)
+        allowed = set()
+        for piece in raw.split(","):
+            piece = piece.strip().lower()
+            if not piece:
+                continue
+            if not piece.startswith("."):
+                piece = "." + piece
+            allowed.add(piece)
+        if not allowed:
+            # Empty filter `{file|}` - treat as no filter to
+            # avoid bricking actions on user typos. We rewrite
+            # to %f so the existing token system substitutes
+            # the first selected file.
+            new_param = pattern.sub("%f", param)
+            return new_param, True
+
+        # Gather current selection. We use selected_or_tagged()
+        # because that's what most action handlers consume - we
+        # want our gate check to be consistent with what the
+        # action would actually iterate over.
+        try:
+            sel = list(src.selected_or_tagged() or [])
+        except Exception:
+            sel = []
+        if not sel:
+            # No files selected - let the action handle it
+            # (file picker, no-op, etc.). Just normalize the
+            # token and pass through.
+            new_param = pattern.sub("%f", param)
+            return new_param, True
+
+        # Check every selected file. We use a generator so the
+        # check stops at the first failure.
+        from pathlib import Path
+        bad = []
+        for p in sel:
+            name = Path(str(p)).name
+            ext = Path(name).suffix.lower()
+            if ext not in allowed:
+                bad.append(name)
+
+        if bad:
+            # Build a helpful message that names the offender(s)
+            # AND the allowed list. We cap the displayed list of
+            # bad files at 5 - more than that and the message
+            # becomes unwieldy.
+            allowed_display = ", ".join(sorted(allowed))
+            if len(bad) <= 5:
+                bad_display = "\n".join(f"  - {b}" for b in bad)
+            else:
+                bad_display = (
+                    "\n".join(f"  - {b}" for b in bad[:5])
+                    + f"\n  ... and {len(bad) - 5} more")
+            QMessageBox.warning(
+                self.w, "File not allowed",
+                f"Action '{action}' is restricted to files with "
+                f"extension:\n  {allowed_display}\n\n"
+                f"The following selected file(s) don't match:\n"
+                f"{bad_display}\n\n"
+                f"Either change the selection, or remove "
+                f"'|{raw}' from the Param to lift the restriction.")
+            return param, False
+
+        # All good - rewrite the filter token to plain %f so the
+        # existing token substituter (which only knows %-style
+        # tokens) replaces it with the actual filename. If the
+        # user already had a separate %f in the param, that's
+        # fine - the rewrite just creates a second %f, both
+        # expand to the same first-selected-file path.
+        new_param = pattern.sub("%f", param)
+        return new_param, True
 
     def _spawn_in_terminal(self, args, cwd=None, hold=True):
         """Launch a command in a real interactive terminal window.
@@ -1904,8 +2059,49 @@ class ActionDispatcher:
         header, lists CHIP packets/banks, allows hex / disasm view
         of individual banks, raw bank extraction, EAPI / EasyFS /
         Yeti file-table detection, embedded-blob scan, GMod2 EEPROM
-        read/write. Uses the selected .crt file or prompts."""
+        read/write. Uses the selected .crt file or prompts.
+
+        Multi-file support: if multiple .crt files are selected
+        in the lister, the toolkit opens the FIRST one and gets
+        a Prev/Next navigation bar so the user can step through
+        all selected cartridges without re-picking. The list of
+        carts to navigate is built from selected_or_tagged(),
+        filtered to .crt extensions only - non-CRT files in the
+        selection are silently skipped from the playlist (you
+        wouldn't want a Markdown README mixed in).
+        """
         from .crt_toolkit import open_crt_toolkit, CrtParseError
+        # Build the playlist first: every .crt in the active
+        # selection, ordered as they appear in the lister. We
+        # only fall back to the file picker if NOTHING relevant
+        # is selected.
+        sel_paths = []
+        try:
+            sel_paths = [
+                p for p in src.selected_or_tagged()
+                if str(p).lower().endswith(".crt")]
+        except Exception:
+            sel_paths = []
+
+        if sel_paths:
+            # Multi-file path - first opens, others queued.
+            playlist = [str(p) for p in sel_paths]
+            try:
+                open_crt_toolkit(
+                    playlist[0], self.w,
+                    playlist=playlist if len(playlist) > 1
+                                            else None,
+                    playlist_index=0)
+            except CrtParseError as e:
+                QMessageBox.warning(
+                    self.w, "CRT Toolkit",
+                    f"Not a valid VICE CRT file:\n{e}")
+            except Exception as e:
+                QMessageBox.warning(
+                    self.w, "CRT Toolkit", str(e))
+            return
+
+        # Fallback: nothing selected -> open file picker as before
         path = self._pick_file_for_module(
             src, (".crt",),
             "Open C64 cartridge image",
@@ -2217,6 +2413,24 @@ class ActionDispatcher:
                 QMessageBox.warning(self.w, "Run",
                                       f"Cannot parse command:\n{e}")
                 return
+            # Windows quoting fix: shlex.split(posix=False) leaves
+            # surrounding "..." quotes attached to the token. Our
+            # _substitute_tokens always wraps paths in quotes so
+            # that they survive the split as one argument, but the
+            # result is then literally `"C:\path\file.txt"` as an
+            # argv entry - with the quote chars as part of the
+            # string. Popen passes that straight to the child app
+            # which sees a filename starting with `"`, and we get
+            # "Die Syntax fuer den Dateinamen ist falsch" (Notepad)
+            # or similar errors.
+            # Strip surrounding quotes here, after the split has
+            # done its job of identifying argument boundaries.
+            if os.name == 'nt':
+                parts = [
+                    (p[1:-1] if len(p) >= 2
+                                 and p[0] == '"' and p[-1] == '"'
+                              else p)
+                    for p in parts]
             if not parts:
                 self._status("Run: empty command")
                 return
@@ -4953,6 +5167,18 @@ class ActionDispatcher:
             QMessageBox.warning(self.w, "External Script",
                                 f"Cannot parse command:\n{e}")
             return
+        # Windows quoting fix: see the matching block in act_run -
+        # shlex.split(posix=False) keeps surrounding "..." quotes
+        # attached to the token, which Popen then passes literally
+        # to the child app, breaking apps like notepad that see a
+        # filename starting with `"`. Strip leading+trailing quote
+        # pairs so the path arrives clean.
+        if os.name == 'nt':
+            parts = [
+                (p[1:-1] if len(p) >= 2
+                             and p[0] == '"' and p[-1] == '"'
+                          else p)
+                for p in parts]
         if not parts:
             self._status("External Script: empty command")
             return

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# date_time: 2026-05-27 16:20
 """Standalone-Starter fuer den U64-Stream-Viewer.
 
 Erlaubt es den U64-Streamer ohne Quopus zu starten - z.B. von einem

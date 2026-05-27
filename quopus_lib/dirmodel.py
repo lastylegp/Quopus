@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """Virtualized table model with tagged-items support (space key).
 Four columns: Name, Ext, Size, Date. Sortable via header click."""
 from datetime import datetime
@@ -11,13 +12,16 @@ from .palette import C, fmt_size, fmt_blocks
 
 
 # Column indices. COL_FOLDER is only shown in search-results mode;
-# regular listings use the first 4 columns and skip column 4.
+# COL_CRT_ID is only shown when the current listing contains at
+# least one .crt file. Regular listings use the first 4 columns
+# and skip columns 4 and 5.
 COL_NAME   = 0
 COL_EXT    = 1
 COL_SIZE   = 2
 COL_DATE   = 3
-COL_FOLDER = 4
-COL_COUNT  = 5
+COL_CRT_ID = 4
+COL_FOLDER = 5
+COL_COUNT  = 6
 
 
 class TaggedItemDelegate(QStyledItemDelegate):
@@ -91,6 +95,9 @@ class DirModel(QAbstractTableModel):
     SORT_TIME   = 2
     SORT_EXT    = 3
     SORT_FOLDER = 4
+    # New since CRT-ID column was added. Preserves existing
+    # config values for the older sort keys.
+    SORT_CRT_ID = 5
 
     # Map column indices to sort keys for header clicks
     _COL_TO_SORT = {
@@ -98,10 +105,11 @@ class DirModel(QAbstractTableModel):
         COL_EXT:    SORT_EXT,
         COL_SIZE:   SORT_SIZE,
         COL_DATE:   SORT_TIME,
+        COL_CRT_ID: SORT_CRT_ID,
         COL_FOLDER: SORT_FOLDER,
     }
 
-    HEADERS = ("Name", "Ext", "Size", "Date", "Folder")
+    HEADERS = ("Name", "Ext", "Size", "Date", "CRT-ID", "Folder")
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -114,6 +122,11 @@ class DirModel(QAbstractTableModel):
         # the lister is showing search results (entries have
         # source_dir populated).
         self.show_folder_column = False
+        # Whether to show the CRT-ID column. Set to True by the
+        # lister when at least one .crt file is in the listing.
+        # The model itself doesn't auto-detect this - the lister
+        # walks entries after refresh() and toggles this flag.
+        self.show_crt_id_column = False
         # Whether to format the Size column as C64 disk blocks
         # (256 bytes = 1 block) rather than human-readable bytes.
         # Set by FileLister.__init__ from the config.
@@ -132,8 +145,18 @@ class DirModel(QAbstractTableModel):
     def columnCount(self, parent=QModelIndex()):
         if parent.isValid():
             return 0
-        # Hide the Folder column outside of search-results mode
-        return COL_COUNT if self.show_folder_column else COL_COUNT - 1
+        # Three column-count regimes:
+        #   1. Search results: Name/Ext/Size/Date + Folder (COL_FOLDER+1 = 6)
+        #      The CRT-ID column is NOT shown alongside Folder because
+        #      search results have their own layout and a 6th column
+        #      would be cramped.
+        #   2. Regular listing with .crt files: + CRT-ID (COL_CRT_ID+1 = 5)
+        #   3. Regular listing without .crt: just Name/Ext/Size/Date (= 4)
+        if self.show_folder_column:
+            return COL_FOLDER + 1
+        if self.show_crt_id_column:
+            return COL_CRT_ID + 1
+        return COL_DATE + 1
 
     def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
         if role != Qt.ItemDataRole.DisplayRole:
@@ -193,6 +216,23 @@ class DirModel(QAbstractTableModel):
                         "%d-%b-%y %H:%M")
                 except Exception:
                     return "?"
+            elif col == COL_CRT_ID:
+                # CRT cartridge hardware ID, only meaningful for
+                # .crt files. We call the cached quick-parser
+                # which reads 64 bytes from disk on first access
+                # and memoizes by (path, mtime, size).
+                if e.is_dir or not e.name.lower().endswith(".crt"):
+                    return ""
+                try:
+                    from .crt_toolkit import crt_quick_id
+                    info = crt_quick_id(e.path)
+                    if info is None:
+                        return "?"   # not a valid CRT signature
+                    # Compact form for the column: "#21 Action Replay"
+                    # Truncated by the column width if too long.
+                    return f"#{info['id']} {info['short']}"
+                except Exception:
+                    return "?"
             elif col == COL_FOLDER:
                 # Source-folder annotation, populated only on
                 # search-results entries.
@@ -217,19 +257,34 @@ class DirModel(QAbstractTableModel):
             # for every column so the user can hover anywhere
             # on the row.
             #
-            # For search-result entries we have e.source_dir
-            # set, and e.path is the absolute file path - we
-            # show both so the user sees "what is this and
-            # where does it live" at a glance. For normal
-            # listings e.source_dir is None and we just show
-            # the file's absolute path.
+            # For .crt files we also append the cartridge type
+            # (hardware ID + name) so you can spot Action Replay
+            # vs EasyFlash vs Hyper-BASIC without opening the
+            # CRT toolkit.
+            crt_info = ""
+            if (not e.is_dir
+                    and e.name.lower().endswith(".crt")):
+                try:
+                    from .crt_toolkit import crt_quick_id
+                    info = crt_quick_id(e.path)
+                    if info is not None:
+                        crt_info = (
+                            f"\nCRT: {info['machine']}, "
+                            f"type #{info['id']} ({info['long']})"
+                            + (f"\nCart name: {info['name']}"
+                                if info['name'] else ""))
+                    else:
+                        crt_info = "\nCRT: (invalid signature)"
+                except Exception:
+                    pass
             if e.source_dir:
                 # Search-results row - show search origin and
                 # filename separately so they're easy to read.
                 return (f"Name:   {e.name}\n"
-                        f"Folder: {e.source_dir}")
+                        f"Folder: {e.source_dir}"
+                        + crt_info)
             # Regular listing - the path IS the location.
-            return e.path
+            return e.path + crt_info
 
         if role == Qt.ItemDataRole.UserRole:
             return e.path
@@ -351,6 +406,25 @@ class DirModel(QAbstractTableModel):
             # Sort by source folder, then by filename within folder
             key = lambda i: ((entries[i].source_dir or "").lower(),
                               entries[i].name.lower())
+        elif self.sort_key == self.SORT_CRT_ID:
+            # Sort by CRT hardware ID. Non-CRT files get a
+            # sentinel (-1) so they sort to the top in
+            # ascending order. We import lazily so a missing
+            # crt_toolkit doesn't break listing.
+            def _crt_key(i):
+                e = entries[i]
+                if (not e.is_dir
+                        and e.name.lower().endswith(".crt")):
+                    try:
+                        from .crt_toolkit import crt_quick_id
+                        info = crt_quick_id(e.path)
+                        if info is not None:
+                            return (info["id"],
+                                    e.name.lower())
+                    except Exception:
+                        pass
+                return (-1, e.name.lower())
+            key = _crt_key
         else:
             key = lambda i: entries[i].name.lower()
         dir_idx = [i for i, e in enumerate(entries) if e.is_dir]

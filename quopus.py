@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# date_time: 2026-05-27 16:20
 """
 Quopus Commander - PC file manager inspired by Directory Opus 4
 

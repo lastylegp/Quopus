@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -22,7 +23,7 @@ from PyQt6.QtCore import Qt, QTimer, QEvent, pyqtSignal
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QListView, QTreeView, QHeaderView, QAbstractItemView,
-    QMenu, QInputDialog, QMessageBox
+    QMenu, QInputDialog, QMessageBox, QToolButton
 )
 
 from .palette import (
@@ -340,6 +341,45 @@ class FileLister(QWidget):
         self.btn_up.setFixedWidth(22); self.btn_up.setToolTip("Parent")
         self.btn_up.clicked.connect(self.parent_dir)
         nav_row.addWidget(self.btn_up)
+
+        # Filter dropdown: lets the user temporarily restrict the
+        # listing to one file extension. "*" = no filter (default).
+        # The extensions are grouped alphabetically: a top-level
+        # menu lists letters A-Z, each letter expands to a sub-
+        # menu with all its extensions (.prg under P, .crt under
+        # C, etc). Letters with no matching extensions are
+        # omitted. The "*" wildcard sits at the top so it's a
+        # one-click reset.
+        #
+        # The active filter does NOT touch the underlying entries
+        # cache - it only changes how _refresh_listing() copies
+        # entries from cache to the model, so toggling the filter
+        # is instant and doesn't re-walk the filesystem. Directory
+        # rows are always visible regardless of filter so the user
+        # can keep navigating.
+        from PyQt6.QtWidgets import QToolButton
+        self.btn_filter = QToolButton()
+        self.btn_filter.setText("*")
+        self.btn_filter.setFixedWidth(60)
+        self.btn_filter.setToolTip(
+            "Filter the file list by extension.\n"
+            "Pick * for 'show everything' or drill down via\n"
+            "the alphabetic submenus to a specific extension.\n"
+            "Folders are always visible regardless of the filter\n"
+            "so you can keep navigating.")
+        self.btn_filter.setPopupMode(
+            QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.btn_filter.setStyleSheet(
+            "QToolButton { background-color: #ffffff; "
+            "color: #000000; border: 1px solid #000000; "
+            "padding: 1px 4px; } "
+            "QToolButton::menu-indicator { width: 0px; }")
+        self._current_filter_ext = "*"   # active filter
+        # The menu itself is built lazily / rebuilt on every
+        # refresh() via _populate_filter_dropdown.
+        self._filter_menu = QMenu(self)
+        self.btn_filter.setMenu(self._filter_menu)
+        nav_row.addWidget(self.btn_filter)
 
         self.path_edit = QLineEdit(str(self.current_path))
         self.path_edit.setStyleSheet(PATH_EDIT_QSS)
@@ -957,10 +997,53 @@ class FileLister(QWidget):
             entries = [e for e in entries
                          if not fits_dos_83(e.name, e.is_dir)]
 
+        # Cache the FILESYSTEM-side list before applying the
+        # extension filter. _apply_filter_to_entries() pulls from
+        # this cache so flipping the filter dropdown is instant
+        # (no re-walk of the disk). Filesystem refreshes (parent
+        # dir change, F5, etc.) overwrite the cache via refresh().
+        self._all_entries = list(entries)
+
+        # Apply the active extension filter. The filter cmb_filter
+        # may not exist yet on the very first refresh during
+        # construction (the combo is built but its items list
+        # gets populated by _populate_filter_dropdown which calls
+        # us back). Default _current_filter_ext is '*' which is
+        # a no-op.
+        entries = self._apply_filter_to_entries(entries)
+
+        # Repopulate the filter dropdown so it reflects the
+        # extension set the user is currently looking at. We do
+        # this AFTER the filter is applied so the call order is:
+        # walk FS -> cache -> filter -> populate dropdown
+        # -> set model entries. The dropdown rebuild signals
+        # currentTextChanged which is fine - we ignore it during
+        # programmatic updates via the _filter_signal_blocked
+        # guard.
+        self._populate_filter_dropdown()
+
         # Recount nach Filter
         for e in entries:
             if e.is_dir: n_dirs += 1
             else: n_files += 1; total_size += e.size
+
+        # Auto-toggle the CRT-ID column: only show it when the
+        # listing actually contains .crt files. Saves visual
+        # clutter for the 99% case where the user is in a folder
+        # with no cartridges. We detect by extension only here -
+        # we don't sniff every file's bytes during the listing
+        # refresh, that would be expensive on big dirs. The
+        # crt_quick_id call in the data() handler does the
+        # actual byte check (and caches the result).
+        has_crt = any(
+            (not e.is_dir) and e.name.lower().endswith(".crt")
+            for e in entries)
+        if self.model.show_crt_id_column != has_crt:
+            # layoutAboutToBeChanged/Changed needed so the view
+            # actually picks up the new columnCount
+            self.model.layoutAboutToBeChanged.emit()
+            self.model.show_crt_id_column = has_crt
+            self.model.layoutChanged.emit()
 
         self.model.set_entries(entries)
         # Cache totals for the info-bar (used by _update_info_bar when tags
@@ -1009,11 +1092,32 @@ class FileLister(QWidget):
         if self.fs.kind == 'remote':
             suffix = "  |  [FTP]  Esc to disconnect"
 
+        # Single-selection CRT info: if exactly one selected
+        # file is a .crt, show its hardware ID + name in the
+        # info bar. Saves a click into the CRT toolkit just to
+        # answer "what type of cart is this".
+        crt_suffix = ""
+        if len(active_paths) == 1:
+            sel_path = next(iter(active_paths))
+            try:
+                from pathlib import Path as _P
+                if _P(sel_path).suffix.lower() == ".crt":
+                    from .crt_toolkit import crt_quick_id
+                    info = crt_quick_id(sel_path)
+                    if info is not None:
+                        crt_suffix = (
+                            f"  |  CRT type #{info['id']} "
+                            f"({info['long']})")
+                        if info['name']:
+                            crt_suffix += f" '{info['name']}'"
+            except Exception:
+                pass
+
         if active_paths:
             text = (f" {t_dirs} of {n_dirs} dirs, "
                     f"{t_files} of {n_files} files, "
                     f"{fmt_size(t_size)} of {fmt_size(total_size)}"
-                    f"{suffix} ")
+                    f"{suffix}{crt_suffix} ")
         else:
             text = (f" {n_dirs} dirs, {n_files} files, "
                     f"{fmt_size(total_size)}{suffix} ")
@@ -2715,6 +2819,158 @@ class FileLister(QWidget):
             param = text or None
 
         w.actions.dispatch(action_name, param)
+
+    def _apply_filter_to_entries(self, entries):
+        """Return a filtered version of the entries list based
+        on the currently-selected extension in cmb_filter.
+
+        Behavior:
+          - Filter '*' (or no filter widget yet during init):
+            entries pass through unchanged
+          - Filter '.prg' (or any extension): only entries with
+            that case-insensitive extension are kept, PLUS all
+            directories so the user can keep navigating
+
+        This is the hot path for live-filter updates - called
+        both from refresh() with a fresh FS walk and from
+        _on_filter_changed() with the cached _all_entries.
+        """
+        ext = getattr(self, '_current_filter_ext', '*') or '*'
+        if ext == '*':
+            return entries
+        ext_lc = ext.lower()
+        return [e for e in entries
+                  if e.is_dir
+                      or e.name.lower().endswith(ext_lc)]
+
+    def _populate_filter_dropdown(self):
+        """Build the cascading filter menu. Structure:
+
+            *  (top-level, no submenu, just sets filter to *)
+            ─────────────
+            A ▸
+                .adf
+                .arx
+            C ▸
+                .crt
+            P ▸
+                .png
+                .prg
+            ...
+
+        Only letters that have at least one matching extension
+        appear in the top level. Letters with empty lists are
+        skipped to keep the menu compact. The extension list
+        is read from the live config every time so user-added
+        associations show up immediately.
+
+        Each leaf action is wired to set the filter to that
+        extension and re-apply via _on_filter_changed().
+        """
+        from .file_assoc import DEFAULT_ASSOC
+        # Gather all known extensions, normalised. We exclude
+        # the '*' fallback entry from DEFAULT_ASSOC because we
+        # add our own '*' explicitly at the top of the menu.
+        exts = set()
+        for ext in DEFAULT_ASSOC:
+            if ext != '*':
+                exts.add(ext.lower())
+        # User-customised additions live in config['file_assoc'].
+        try:
+            w = self.window()
+            cfg = getattr(w, 'config', None)
+            if cfg is not None:
+                for ext in (cfg.get('file_assoc') or {}):
+                    if ext != '*':
+                        exts.add(ext.lower())
+        except Exception:
+            pass
+
+        # Group by first alphabetic character (after the dot).
+        # We don't include the dot in the grouping letter -
+        # ".adf" goes under "A" not under ".".
+        groups = {}     # letter -> sorted list of ext strings
+        for ext in exts:
+            # Robust to weird extensions like '.7z' or '..bak':
+            # use the first letter-or-digit after the leading dot.
+            stripped = ext.lstrip('.').lower()
+            if not stripped:
+                continue
+            letter = stripped[0].upper()
+            groups.setdefault(letter, []).append(ext)
+        for letter in groups:
+            groups[letter].sort()
+
+        # Rebuild the menu. We always start fresh - the menu is
+        # small (max ~30 items across letters) so rebuilding on
+        # every refresh is cheap and avoids stale-entry bugs.
+        self._filter_menu.clear()
+
+        # "*" at the top - one click to clear the filter
+        act_all = self._filter_menu.addAction("*  (show all files)")
+        act_all.triggered.connect(
+            lambda: self._on_filter_changed('*'))
+        self._filter_menu.addSeparator()
+
+        # Letter submenus in alphabetical order
+        for letter in sorted(groups):
+            sub = self._filter_menu.addMenu(letter)
+            for ext in groups[letter]:
+                # Closure captures ext - use default arg to
+                # bind the current value, not the loop variable
+                act = sub.addAction(ext)
+                act.triggered.connect(
+                    lambda checked=False, e=ext:
+                        self._on_filter_changed(e))
+
+    def _on_filter_changed(self, text):
+        """A submenu leaf action (or the top-level '*') was
+        clicked. Apply immediately by re-filtering _all_entries
+        (the cached full listing from the last FS walk) and
+        pushing the result to the model. No filesystem access,
+        no flicker. Also updates the button's visible label so
+        the user can see the active filter at a glance.
+        """
+        if getattr(self, '_filter_signal_blocked', False):
+            return
+        self._current_filter_ext = text or '*'
+        # Show the active filter on the button itself - "*" or
+        # ".prg" or whatever. Truncated to 6 chars + ellipsis if
+        # extension somehow ends up long (e.g. ".manifest").
+        label = self._current_filter_ext
+        if len(label) > 7:
+            label = label[:6] + "…"
+        try:
+            self.btn_filter.setText(label)
+        except Exception:
+            pass
+        cache = getattr(self, '_all_entries', None)
+        if cache is None:
+            # No cached listing yet - happens during first
+            # construction before any refresh has run. The
+            # next refresh() will pick up the new filter
+            # via _current_filter_ext.
+            return
+        entries = self._apply_filter_to_entries(list(cache))
+        # Re-derive counts for the info bar
+        n_dirs = sum(1 for e in entries if e.is_dir)
+        n_files = sum(1 for e in entries if not e.is_dir)
+        total_size = sum(e.size for e in entries
+                          if not e.is_dir)
+        # Push to model
+        self.model.set_entries(entries)
+        self._stat_n_dirs = n_dirs
+        self._stat_n_files = n_files
+        self._stat_total_size = total_size
+        self._update_info_bar()
+        # Auto-toggle the CRT-ID column for the filtered view
+        has_crt = any(
+            (not e.is_dir) and e.name.lower().endswith(".crt")
+            for e in entries)
+        if self.model.show_crt_id_column != has_crt:
+            self.model.layoutAboutToBeChanged.emit()
+            self.model.show_crt_id_column = has_crt
+            self.model.layoutChanged.emit()
 
     def refresh_fonts(self):
         """Re-apply scale-aware fonts to widgets that get their

@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 20:07
 """
 Main window layout:
 
@@ -2601,7 +2602,11 @@ class _ButtonAssignEditDialog(QDialog):
 
         hint = QLabel(
             "  Tokens for Param:  %f = first file, %F = all selected, "
-            "%n = basename, %p = current dir, %d = other-side dir")
+            "%n = basename, %p = current dir, %d = other-side dir\n"
+            "  Extension gate:  {file|crt,prg} - the action only "
+            "runs if every selected file ends with one of those "
+            "extensions (case-insensitive). On pass it's rewritten "
+            "to %f so use it ANYWHERE you'd use %f.")
         hint.setStyleSheet(f"QLabel {{ color: #444; font-size: {scaled_font_px(10)}px; }}")
         hint.setWordWrap(True)
         form.addRow("", hint)

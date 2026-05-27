@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """
 Commodore 64 .CRT cartridge image toolkit.
 
@@ -454,6 +455,78 @@ def parse_crt(path) -> CrtFile:
     if len(raw) >= 16 and raw[:16] in _VALID_SIGNATURES:
         return parse_crt_strict(raw, source_path=p)
     return parse_raw_bin(raw, source_path=p)
+
+
+def crt_quick_id(path):
+    """Fast peek at a .crt file's header to extract just the
+    hardware ID + name + machine. Reads only 64 bytes from disk
+    so it's cheap enough to call from the lister model for
+    every visible .crt row (memoized via _crt_id_cache).
+
+    Returns a dict with keys 'id', 'name', 'short', 'machine'
+    on success, or None if the file isn't a valid CRT (no
+    signature). Never raises - any I/O or parse error returns
+    None so the lister can fall through to its normal display.
+
+    The cache key is (path, mtime, size) so the entry gets
+    invalidated automatically when the file changes on disk.
+    """
+    try:
+        st = Path(path).stat()
+    except OSError:
+        return None
+    cache_key = (str(path), int(st.st_mtime), int(st.st_size))
+    cached = _crt_id_cache.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        with open(path, "rb") as f:
+            head = f.read(64)
+    except OSError:
+        return None
+    if len(head) < 64:
+        _crt_id_cache[cache_key] = None
+        return None
+    sig = head[0:16]
+    if sig not in _VALID_SIGNATURES:
+        _crt_id_cache[cache_key] = None
+        return None
+    # All multi-byte fields are BIG-ENDIAN
+    hardware_id, = struct.unpack(">H", head[0x16:0x18])
+    name_raw = head[0x20:0x40]
+    name = name_raw.rstrip(b"\x00 ").decode("ascii", "replace")
+    info = CRT_TYPES.get(hardware_id)
+    if info:
+        short, long_name = info[0], info[1]
+    else:
+        short, long_name = f"#{hardware_id}", f"Unknown type {hardware_id}"
+    if sig == _C64_SIGNATURE:
+        machine = "C64"
+    elif sig == _C128_SIGNATURE:
+        machine = "C128"
+    elif sig == _CBM2_SIGNATURE:
+        machine = "CBM2"
+    elif sig == _VIC20_SIGNATURE:
+        machine = "VIC20"
+    else:
+        machine = "PLUS4"
+    out = {
+        "id": hardware_id,
+        "name": name,
+        "short": short,
+        "long": long_name,
+        "machine": machine,
+    }
+    # Cap cache to avoid runaway memory on huge dir scans
+    if len(_crt_id_cache) > 4096:
+        _crt_id_cache.clear()
+    _crt_id_cache[cache_key] = out
+    return out
+
+
+# Cache: (path, mtime, size) -> dict|None. Populated lazily
+# by crt_quick_id. Bounded at 4096 entries (cleared on overflow).
+_crt_id_cache: dict = {}
 
 
 def parse_raw_bin(raw: bytes,
@@ -3606,12 +3679,28 @@ def _make_crt_dialog():
     )
 
     class _CrtToolkitDialog(QDialog):
-        def __init__(self, crt: CrtFile, parent=None):
+        def __init__(self, crt: CrtFile, parent=None,
+                      playlist=None, playlist_index=0):
             super().__init__(parent)
             self.crt = crt
+            # Multi-file playlist support: when the user opens
+            # the toolkit with several .crt files selected in the
+            # lister, we get the full list here and show
+            # Prev/Next navigation. Single-file invocations leave
+            # playlist=None and the nav row stays hidden.
+            self._playlist = list(playlist) if playlist else None
+            self._playlist_index = int(playlist_index)
+            self._parent_for_reopen = parent
+
+            title_suffix = ""
+            if self._playlist:
+                title_suffix = (
+                    f"  ({self._playlist_index + 1} of "
+                    f"{len(self._playlist)})")
             self.setWindowTitle(
                 f"CRT Toolkit: {crt.path.name}  "
-                f"[{crt.hardware_short} - {crt.machine}]")
+                f"[{crt.hardware_short} - {crt.machine}]"
+                + title_suffix)
             self.resize(1100, 720)
             self.setModal(False)
             self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
@@ -3622,6 +3711,62 @@ def _make_crt_dialog():
             v = QVBoxLayout(self)
             v.setContentsMargins(4, 4, 4, 4)
             v.setSpacing(3)
+
+            # ---- Playlist navigation row (only when applicable) ----
+            if self._playlist and len(self._playlist) > 1:
+                nav = QHBoxLayout()
+                nav.setSpacing(4)
+                nav.setContentsMargins(0, 0, 0, 0)
+                self._btn_prev_cart = QPushButton("◀ Prev")
+                self._btn_prev_cart.setStyleSheet(
+                    button_qss("yellow"))
+                self._btn_prev_cart.setFixedWidth(80)
+                self._btn_prev_cart.setEnabled(
+                    self._playlist_index > 0)
+                self._btn_prev_cart.setToolTip(
+                    "Close this CRT and open the previous one\n"
+                    "from the file selection. Shortcut: Alt+Left")
+                self._btn_prev_cart.clicked.connect(
+                    lambda: self._goto_playlist_offset(-1))
+                nav.addWidget(self._btn_prev_cart)
+
+                self._btn_next_cart = QPushButton("Next ▶")
+                self._btn_next_cart.setStyleSheet(
+                    button_qss("yellow"))
+                self._btn_next_cart.setFixedWidth(80)
+                self._btn_next_cart.setEnabled(
+                    self._playlist_index
+                    < len(self._playlist) - 1)
+                self._btn_next_cart.setToolTip(
+                    "Close this CRT and open the next one from\n"
+                    "the file selection. Shortcut: Alt+Right")
+                self._btn_next_cart.clicked.connect(
+                    lambda: self._goto_playlist_offset(+1))
+                nav.addWidget(self._btn_next_cart)
+
+                # Position indicator + total count
+                self._lbl_playlist_pos = QLabel(
+                    f"  CRT {self._playlist_index + 1} "
+                    f"of {len(self._playlist)}:  "
+                    f"{crt.path.name}")
+                self._lbl_playlist_pos.setStyleSheet(
+                    "color: #000; font-weight: bold;")
+                nav.addWidget(self._lbl_playlist_pos)
+                nav.addStretch(1)
+
+                # Keyboard shortcuts so the user doesn't have to
+                # reach for the mouse between cartridges.
+                from PyQt6.QtGui import QShortcut, QKeySequence
+                sc_prev = QShortcut(
+                    QKeySequence("Alt+Left"), self)
+                sc_prev.activated.connect(
+                    lambda: self._goto_playlist_offset(-1))
+                sc_next = QShortcut(
+                    QKeySequence("Alt+Right"), self)
+                sc_next.activated.connect(
+                    lambda: self._goto_playlist_offset(+1))
+
+                v.addLayout(nav)
 
             # ---- Toolbar ----
             bar = QHBoxLayout()
@@ -6584,6 +6729,48 @@ def _make_crt_dialog():
             self._save_state()
             super().reject()
 
+        def _goto_playlist_offset(self, delta: int):
+            """Navigate to the next/previous .crt in the playlist.
+
+            Closes the current dialog (which triggers cleanup
+            via accept()) and re-opens open_crt_toolkit with the
+            new index. The new dialog inherits the playlist so
+            the user can continue navigating through the whole
+            set without losing their selection.
+
+            Bounds-checked: ignored at the edges. The Prev/Next
+            buttons should already be disabled there too, but the
+            keyboard shortcut goes through here as well so we
+            need a safety check.
+            """
+            if not self._playlist:
+                return
+            new_idx = self._playlist_index + delta
+            if not (0 <= new_idx < len(self._playlist)):
+                return
+            new_path = self._playlist[new_idx]
+            parent_w = self._parent_for_reopen
+            # We capture playlist+index BEFORE close because the
+            # WA_DeleteOnClose flag will eat self after close().
+            pl = list(self._playlist)
+            # Close current dialog. After this point self is dead.
+            try:
+                self.close()
+            except Exception:
+                pass
+            # Open the next one. We schedule via QTimer so the
+            # current dialog's deleteLater has time to run; back-
+            # to-back open+close on the same parent occasionally
+            # causes Qt to mis-route focus events.
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(
+                0,
+                lambda p=new_path, par=parent_w, lst=pl,
+                       idx=new_idx:
+                    open_crt_toolkit(p, parent=par,
+                                      playlist=lst,
+                                      playlist_index=idx))
+
     return _CrtToolkitDialog
 
 
@@ -6598,7 +6785,8 @@ def _ensure_dialog_class():
     return _CrtToolkitDialog
 
 
-def open_crt_toolkit(crt_or_path, parent=None):
+def open_crt_toolkit(crt_or_path, parent=None, playlist=None,
+                       playlist_index=0):
     """Open the CRT Toolkit non-modal dialog. Accepts either a
     Path/string to a .crt file or a pre-parsed CrtFile object.
     Returns the QDialog so callers can keep a reference.
@@ -6610,6 +6798,15 @@ def open_crt_toolkit(crt_or_path, parent=None):
     "Detecting cartridge..." notice as a top-level frameless
     splash window for the WHOLE duration: from before parse_crt()
     runs until the dialog is fully constructed and visible.
+
+    Playlist mode: pass `playlist=[path1, path2, ...]` and
+    `playlist_index` (0-based) to open the first file of a
+    multi-file session. The toolkit shows Prev/Next buttons and
+    "1 of N" status. Each navigation re-opens the dialog with
+    the next/previous file by closing the current dlg and calling
+    open_crt_toolkit recursively with the new index. Saves the
+    user from re-selecting files in the lister to inspect a
+    whole folder of carts.
     """
     cls = _ensure_dialog_class()
 
@@ -6673,7 +6870,9 @@ def open_crt_toolkit(crt_or_path, parent=None):
 
         # Phase 2: dialog construction (also takes time on big carts -
         # building 100+ row tables, scanning blobs, etc.)
-        dlg = cls(crt, parent=parent)
+        dlg = cls(crt, parent=parent,
+                   playlist=playlist,
+                   playlist_index=playlist_index)
         # Phase 3: show the dialog. We tear the splash down ONLY after
         # the dialog has been shown and painted, so the user always
         # has something on screen during the transition.

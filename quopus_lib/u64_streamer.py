@@ -1,3 +1,4 @@
+# date_time: 2026-05-27 16:20
 """Ultimate 64 VIC video streamer for Quopus.
 
 Python port of DusteDdk/u64view (https://github.com/DusteDdk/u64view).

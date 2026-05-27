@@ -76,6 +76,9 @@ Drop the **C64 Pro Mono** TTF into `quopus_commander/fonts/` for authentic PETSC
 - Path edit line for direct navigation
 - Drive column (left side) with up to 40 configurable folder/FTP bookmarks - see "Drive-button column" below for full details
 - Branch view (Ctrl+B): flat-list every file in all subdirs
+- **Filter dropdown** between `^` and the path edit. Click to pick a file extension to restrict the listing to (`*` = no filter). Top-level menu shows letters A-Z; each letter opens a submenu of matching extensions, drawn from `DEFAULT_ASSOC` + your user-configured `file_assoc` entries. Letters with no matches are hidden so the menu stays compact. Directories are always visible regardless of filter so navigation never gets blocked. Filter changes are instant — the directory walk is cached, only the filtered view is regenerated per click.
+- **CRT-ID column** auto-appears when a listing contains `.crt` files. Shows the cartridge hardware type at a glance (`#21 Comal-80`, `#79 Hyper-BASIC`). Sortable by hardware ID. The hover tooltip on a `.crt` row shows the full info: machine (C64/C128/CBM2/VIC20/PLUS4), type number + long name, and the cart's internal ASCII name. When exactly one `.crt` is selected, the info bar also shows the same info. Backed by a lightweight 64-byte-per-file parser (`crt_quick_id()`) with `(path, mtime, size)` caching, so a directory of thousands of carts costs almost nothing to display.
+- **Search-results path tooltip** — hovering any row in a search-results listing shows `Name: foo.prg` and `Folder: /full/path` separately; regular listings show the absolute path. Solves the "Folder column truncated, can't see the full path" problem without needing to widen the column.
 
 ### Drag & Drop
 - **Drag from one lister to the other** — Copy by default, hold Shift to Move
@@ -684,6 +687,8 @@ Browse, edit, validate, and extract from Commodore disk images. Pixel-accurate C
 
 A format label above the preview pane tells you what was detected (`Koala`, `Amica Paint`, `Logo+Charset`, etc.) so you know whether to trust the rendering. Click anywhere on the preview to open a fullscreen view that scales with the window; Esc or double-click closes it. The fullscreen window uses FastTransformation for crisp pixel-doubling at integer zoom levels.
 
+**Save as PNG** — a button under the preview pane (and a matching button in the fullscreen dialog) writes the current preview to a PNG file. Rendered at 2× nearest-neighbor scaling so C64 fat pixels stay sharp at any zoom. Filename is suggested from the PETSCII title (sanitised for filesystem-safe chars), the last-used target directory is remembered per dialog. Disabled (greyed out) when no graphical preview is active (e.g. on REL / DEL files or when only the hex peek is showing). Useful for capturing demo previews for catalog screenshots, BBS file lists, social posts.
+
 **Double-click actions** — right-click or double-click on a PRG file in the directory tree shows an action menu:
 - **Extract '...'** — extract to the active lister directory
 - **Run '...' on U64** — send the PRG directly to a configured Ultimate-64 via HTTP. If no U64 is configured, a dialog offers a "Configure now" button that opens the device-config dialog inline — you can add the U64's IP, click OK, and the Run action picks up from where it left off
@@ -1053,6 +1058,8 @@ The optional `=N` value picks the window size from a fixed table. The aspect rat
 
 Combined with a BBS auto-close watch the streamer becomes a kiosk-style live feed: positioned where you want at the size you want, no chrome, no accidental config-clicking, auto-dismissed on logout.
 
+**Wayland caveat**: Wayland's design forbids applications from setting their own window position. Drag-and-drop of the streamer window itself still works (via Qt's `startSystemMove()` which asks the Wayland compositor to handle the drag), but the saved position cannot be restored on the next launch — the compositor decides where the window first appears. You drag it into place once per session. The position is still saved to JSON (in case you switch to X11 later), and the streamer prints a one-line console hint on startup explaining the limitation. Under X11, Windows, and macOS the position survives across launches normally.
+
 **BBS mode** (3 args, first must be `BBS`): the streamer starts as normal and additionally polls the given address every 60 seconds. As soon as the byte equals the trigger value, the streamer window closes itself.
 
 Typical workflow:
@@ -1062,6 +1069,7 @@ Typical workflow:
 4. Within max 60 seconds the streamer notices and closes
 
 Address and value parsing accepts `$0400`, `0x0400`, `0400` (leading-zero hex convention), or plain decimal. Values out of range (`> $FF` for the trigger value, `> $FFFF` for the address) give a usage error before the window opens.
+
 
 ### C64 emulator integration
 Beyond VICE memory inspection, Quopus integrates an external C64 emulator for "Run in emulator" workflows:
@@ -1393,6 +1401,7 @@ For folder bookmarks with separate left/right paths configured, "both panels" mo
 
 **Per-button settings:**
 - Label, Action, Color (40 presets), Param (with `%f`/`%F`/`%n`/`%p`/`%d`/`%i` tokens)
+- **Extension gate `{file|ext1,ext2,...}`** in the Param. Before the action runs, every selected file is checked against the comma-list. If any file doesn't match, a warning popup names the offender(s) plus the allowed list and the action is aborted. On pass, the token is rewritten to `%f` (so use it anywhere you'd use `%f`). Keyword and extension list are both case-insensitive, leading dot optional — so `{file|crt}`, `{FILE|.crt}`, `{File|CRT}` and `{file|crt,prg}` all mean the same. Example: `notepad.exe {file|nfo,asm}` refuses to run when a `.zip` is in the selection and silently launches notepad on `.nfo` / `.asm`. The check happens in the central dispatcher so every action benefits, not just `run`.
 - **Hover text** — optional tooltip
 - **Hover image** — optional PNG/JPG; appears centered in the upper window area
 - **Hotkey** — global keyboard shortcut bound to the button. Two ways:
@@ -1672,6 +1681,9 @@ Config file: `config/quopus.cfg` (JSON).
 - `window_geometry` — last window x/y/w/h + state (normal/maximized/fullscreen). Saved using `frameGeometry()` for cross-platform consistency.
 - `size_display` — Lister Size column mode: `"bytes"` (default, human-readable) or `"blocks"` (C64 disk blocks, 256 B = 1 bl)
 - `text_reader_font_size`, `text_reader_fg`, `text_reader_bg` — TextReader appearance (zoom + colors), persisted across sessions
+- `app_font_scale_percent` — global UI font scale (50–300, default 100). Multiplies every stylesheet base size; changes apply live via Settings → Appearance without restart.
+- `app_font_pointsize_override` — body-text base-size override (0 = off, else 6–30). Replaces the BASE for the 10–12 px stylesheets so e.g. setting 14 here gives "14 px body text scaled by the % above". Larger headings keep their relative differentiation.
+- `app_font_family` — global font family for widgets that don't have inline CSS (menus, dialog labels, drive buttons, ...). Empty = platform default. Topaz / Topaz-8 stay hardcoded for the lister content and viewers — only the SIZE scales there.
 - `c64_show_illegal` — boolean: show illegal opcodes in the C64 disassembler
 - `c64_emulator` — path to C64 emulator executable (e.g. `C:\VICE\x64sc.exe`)
 - `c64_emulator_args` — argument template with `{file}`, `{name}`, `{dir}` tokens
