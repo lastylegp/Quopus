@@ -1,4 +1,4 @@
-# date_time: 2026-05-27 16:20
+# date_time: 2026-05-27 22:22
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII
@@ -1580,8 +1580,44 @@ class HexReader(QDialog):
         self.text.textChanged.connect(self._on_text_changed)
         layout.addWidget(self.text, 1)
 
-        self.page_size = 0x1000
+        # Page-size heuristic: small files (≤10 MB) load in one
+        # shot so the user can scroll the whole thing freely with
+        # no nav buttons needed. Big files stay paged, but with
+        # 1 MB pages instead of the old 4 KB - 4 KB meant a 100 MB
+        # file needed ~25000 page clicks to walk through, 1 MB
+        # cuts that to 100 which is workable. The QTextEdit
+        # widget handles 1 MB of hex output (around 65k rendered
+        # lines) without much fuss; tested with mp3/iso files.
+        # Threshold of 10 MB picked so any reasonable C64 disk
+        # image (D64/D71/D81 = 170-820 KB), ROM (8-64 KB), or
+        # cartridge image (8 KB - 2 MB) fits in one shot.
+        SMALL_FILE_LIMIT = 10 * 1024 * 1024     # 10 MB
+        LARGE_PAGE_SIZE  = 1 * 1024 * 1024      # 1 MB
+        if self.file_size <= SMALL_FILE_LIMIT:
+            # Whole-file mode - page covers everything
+            self.page_size = max(self.file_size, 1)
+            self._whole_file_mode = True
+        else:
+            self.page_size = LARGE_PAGE_SIZE
+            self._whole_file_mode = False
         self.offset = 0
+        # In whole-file mode the navigation buttons (<<, >>, etc.)
+        # are pointless since there's nothing to page through. We
+        # disable them visually so the user sees they don't apply.
+        # We do this AFTER nav buttons are constructed but at the
+        # time __init__ reaches here, so we need to remember the
+        # flag and apply it once the buttons exist - which they
+        # already do above. Re-iterate the nav layout's widgets.
+        if self._whole_file_mode:
+            for i in range(nav.count()):
+                w = nav.itemAt(i).widget()
+                if isinstance(w, QPushButton):
+                    txt = w.text()
+                    if txt in ("<<<", "<<", "<",
+                                ">", ">>", ">>>", "Goto"):
+                        w.setEnabled(False)
+                        w.setToolTip("File fits entirely; "
+                                      "no paging needed.")
         # Edit-mode state
         self._edit_mode = False
         self._dirty = False              # text differs from rendered page
