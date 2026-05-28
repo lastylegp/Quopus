@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 16:35
+# date_time: 2026-05-28 22:29
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII
@@ -7,7 +7,10 @@ Viewers:
 """
 from pathlib import Path
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor, QTextCursor, QTextCharFormat
+from PyQt6.QtGui import (
+    QFont, QColor, QTextCursor, QTextCharFormat,
+    QShortcut, QKeySequence,
+)
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QTextEdit, QComboBox, QInputDialog, QMessageBox,
@@ -425,6 +428,68 @@ class TextReader(QDialog):
         btn_close.clicked.connect(self.accept)
         tool_row.addWidget(btn_close)
         layout.addLayout(tool_row)
+
+        # --- search row ---
+        # Case-insensitive find / find prev / find next over the
+        # currently visible text view (text_plain or text_color).
+        # PETSCII bitmap view has no addressable text so search is
+        # silently ignored there.
+        s_row = QHBoxLayout()
+        s_row.setSpacing(2)
+        s_lbl = QLabel(" Search ")
+        s_lbl.setStyleSheet(INFOBAR_QSS)
+        s_row.addWidget(s_lbl)
+        self.txt_search_edit = QLineEdit()
+        self.txt_search_edit.setPlaceholderText(
+            "search (case-insensitive)")
+        self.txt_search_edit.setStyleSheet(
+            f"QLineEdit {{ background-color: {C.BLACK}; "
+            f"color: {C.WHITE}; border: 1px solid {C.SELECTED}; "
+            f"padding: 2px; }}")
+        self.txt_search_edit.returnPressed.connect(
+            lambda: self._text_search(forward=True))
+        self.txt_search_edit.textChanged.connect(
+            lambda _t: setattr(self, "_txt_search_last", -1))
+        s_row.addWidget(self.txt_search_edit, 1)
+        btn_t_prev = QPushButton("Find prev")
+        btn_t_prev.setStyleSheet(button_qss("blue"))
+        btn_t_prev.setFixedWidth(80)
+        btn_t_prev.clicked.connect(
+            lambda: self._text_search(forward=False))
+        s_row.addWidget(btn_t_prev)
+        btn_t_next = QPushButton("Find next")
+        btn_t_next.setStyleSheet(button_qss("blue"))
+        btn_t_next.setFixedWidth(80)
+        btn_t_next.clicked.connect(
+            lambda: self._text_search(forward=True))
+        s_row.addWidget(btn_t_next)
+        self.lbl_txt_search = QLabel("")
+        self.lbl_txt_search.setStyleSheet(INFOBAR_QSS)
+        self.lbl_txt_search.setFixedWidth(110)
+        s_row.addWidget(self.lbl_txt_search)
+        layout.addLayout(s_row)
+
+        # Search state: char offset of last match in the active
+        # widget's document.
+        self._txt_search_last = -1
+
+        # F3 shortcut: standard editor convention. If the search
+        # field is empty (or hasn't been used yet), F3 puts focus
+        # in the field so the user can just type without clicking
+        # first. If the field already has a query, F3 acts as
+        # Find next; Shift+F3 is Find prev. The shortcut is wired
+        # with WidgetWithChildrenShortcut so it fires while any
+        # widget INSIDE the dialog has keyboard focus (the text
+        # view, the encoding combo, etc.) - but not globally.
+        sc_f3 = QShortcut(QKeySequence("F3"), self)
+        sc_f3.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_f3.activated.connect(self._on_f3)
+        sc_sf3 = QShortcut(QKeySequence("Shift+F3"), self)
+        sc_sf3.setContext(
+            Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        sc_sf3.activated.connect(
+            lambda: self._on_f3(forward=False))
 
         self.text_plain = QPlainTextEdit()
         self.text_plain.setReadOnly(True)
@@ -916,6 +981,11 @@ class TextReader(QDialog):
         HexReader(self.path, self).exec()
 
     def _reload(self, enc_choice):
+        # Reset the search state - we're about to repopulate the
+        # widgets, so any previous match offset is meaningless.
+        self._txt_search_last = -1
+        if hasattr(self, "lbl_txt_search"):
+            self.lbl_txt_search.setText("")
         # Show rendering notice immediately for responsiveness
         self._show_notice()
         try:
@@ -1122,6 +1192,87 @@ class TextReader(QDialog):
             self._reload(self.cb_enc.currentText())
         except Exception as e:
             print(f"[TextReader] refresh_fonts failed: {e}")
+
+    # ---- search ------------------------------------------------------
+
+    def _on_f3(self, forward=True):
+        """F3 / Shift+F3 handler. If the search box is empty, the
+        user almost certainly meant 'I want to search now' - put
+        focus in the box so they can start typing immediately. If
+        the box already has a query, behave as Find next (F3) or
+        Find prev (Shift+F3) - the standard editor convention."""
+        q = self.txt_search_edit.text()
+        if not q:
+            # First-time use of F3 in this dialog: hand the user
+            # the search input so they can type without clicking.
+            self.txt_search_edit.setFocus()
+            self.txt_search_edit.selectAll()
+            return
+        # If focus isn't already in the field, grab it too so a
+        # subsequent F3 with the same query keeps working without
+        # the user having to click anywhere.
+        self._text_search(forward=forward)
+
+    def _active_text_widget(self):
+        """Return whichever text widget is currently visible
+        (text_plain for plain text, text_color for ANSI/NFO).
+        PETSCII bitmap mode returns None - it has no addressable
+        text to search."""
+        if (hasattr(self, "text_color")
+                and self.text_color.isVisible()):
+            return self.text_color
+        if (hasattr(self, "text_plain")
+                and self.text_plain.isVisible()):
+            return self.text_plain
+        return None
+
+    def _text_search(self, forward=True):
+        """Find the query (case-insensitive) in the active text
+        view, wrapping at the ends. The match is selected (so it
+        shows highlighted via the widget's selection colour) and
+        scrolled into view."""
+        widget = self._active_text_widget()
+        if widget is None:
+            self.lbl_txt_search.setText("(bitmap view)")
+            return
+        needle = self.txt_search_edit.text()
+        if not needle:
+            self.lbl_txt_search.setText("—")
+            return
+        doc_text = widget.toPlainText()
+        if not doc_text:
+            self.lbl_txt_search.setText("(empty)")
+            return
+        hay = doc_text.lower()
+        pat = needle.lower()
+        n = len(doc_text)
+        if forward:
+            start = self._txt_search_last + 1
+            idx = hay.find(pat, start)
+            if idx < 0:
+                idx = hay.find(pat, 0)
+        else:
+            end = (self._txt_search_last
+                   if self._txt_search_last >= 0 else n)
+            idx = hay.rfind(pat, 0, max(0, end))
+            if idx < 0:
+                idx = hay.rfind(pat)
+        if idx < 0:
+            self.lbl_txt_search.setText("not found")
+            self._txt_search_last = -1
+            return
+        self._txt_search_last = idx
+        # Place the cursor on the match (with selection) and scroll
+        cur = QTextCursor(widget.document())
+        cur.setPosition(idx)
+        cur.setPosition(idx + len(needle),
+                        QTextCursor.MoveMode.KeepAnchor)
+        widget.setTextCursor(cur)
+        widget.ensureCursorVisible()
+        # report 1-based line number, which is what people expect
+        # when they say "match at line N"
+        line_no = doc_text.count("\n", 0, idx) + 1
+        self.lbl_txt_search.setText(f"line {line_no}")
 
 
 class _HexEditWidget(QPlainTextEdit):
