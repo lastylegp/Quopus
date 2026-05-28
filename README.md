@@ -205,11 +205,12 @@ The schema is specifically designed to stay fast at this scale. Two architectura
 - **Text viewer** with ANSI / PETSCII / plain-text auto-detection
 - **PETSCII viewer**: pixel-rendered to a QPixmap with QPainter — solid cell backgrounds, no font-padding "grid effect" between cells. C64 Pro Mono PUA pages used when available.
 - **NFO viewer**: HTML-rendered with Cascadia Mono / Consolas / DejaVu Sans Mono so block-drawing chars (▀ ▄ █ ░ ▒ ▓) sit flush against each other. Negative letter-spacing eliminates pixel gaps between glyphs.
-- **Hex viewer / editor** with side-by-side hex + ASCII columns. **Edit mode** (yellow `Edit` button toggles it on) lets you patch bytes directly in either column: type 0–9/a–f over a hex digit and the corresponding ASCII char to the right updates live; type a printable ASCII char (0x20–0x7e) over the right column and the hex pair to the left updates live. Layout chrome (offsets, column gaps) is protected — the cursor auto-snaps to the next editable position. Save (orange `Save` button) writes back via `'r+b'`; a one-shot `.bak` backup is created on first save per session. Backspace/Delete/Enter/Tab/paste/drag are all blocked in edit mode so you can't accidentally restructure the layout.
+- **Hex viewer / editor** with side-by-side hex + ASCII columns. A **search bar** finds hex byte values (`A9 00 8D`) or text (case-insensitive); it scans the whole file in chunks, jumps to the page holding the match, highlights it in both columns, and Find next/prev wrap around. **Edit mode** (yellow `Edit` button toggles it on) lets you patch bytes directly in either column: type 0–9/a–f over a hex digit and the corresponding ASCII char to the right updates live; type a printable ASCII char (0x20–0x7e) over the right column and the hex pair to the left updates live. Layout chrome (offsets, column gaps) is protected — the cursor auto-snaps to the next editable position. Save (orange `Save` button) writes back via `'r+b'`; a one-shot `.bak` backup is created on first save per session. Backspace/Delete/Enter/Tab/paste/drag are all blocked in edit mode so you can't accidentally restructure the layout.
 - **Image viewer** — PNG, JPG, GIF (animated), BMP, WEBP, TIF, SVG, ICO. Fit-to-window, 1:1, zoom, Ctrl+wheel
 - **Retro GFX Viewer** — comprehensive retro graphics viewer for C64, Amiga, Atari, MSX, ZX Spectrum, Apple, NEC PC-88/98, SAM Coupé and more. Decodes 18 native C64 bitmap formats internally and 552+ additional formats via an optional RECOIL backend. See full details in the dedicated section below.
 - **Archive viewer** — ZIP, TAR, TAR.GZ, TAR.BZ2, TAR.XZ, LHA/LZH, **RAR**, **GZ**. Browse without extracting (synthetic directory entries for LHA paths). Double-click files inside to view with the right viewer. Extract all / selected.
 - **C64 6502 Disassembler / Editor / Assembler** — dual-pane code workbench for `.prg`, `.bin`, `.crt`, `.tap` files. Far more than a viewer: edit memory, write inline 6502 source with labels, compare original vs patched, and launch directly in your C64 emulator. (`.sid` files now open in the SID Player below — set the file association to `c64disasm` if you want to disassemble a SID's player code instead.)
+- **TAP cassette toolkit** — for C64 `.tap` tape images: identify the loader, list every file on the tape, search the hex, and extract files as `.prg`. Powered by the bundled GPL TAPClean tool (all ~93 loader scanners) with a pure-Python fallback. See the dedicated section below.
 
   **Disassembly engine**
   - Linear-scan disassembly of all documented 6502 opcodes; unknown bytes shown as `.byte $XX`
@@ -694,6 +695,29 @@ A format label above the preview pane tells you what was detected (`Koala`, `Ami
 - **Run '...' on U64** — send the PRG directly to a configured Ultimate-64 via HTTP. If no U64 is configured, a dialog offers a "Configure now" button that opens the device-config dialog inline — you can add the U64's IP, click OK, and the Run action picks up from where it left off
 - **Run '...' in VICE** — extract to a temp PRG and launch the configured VICE emulator
 
+### TAP cassette toolkit
+A dedicated workbench for C64 `.tap` cassette images — identify the loader, list the files on the tape, view/search their bytes, and extract them as `.prg`. Open it by double-clicking a `.tap` file (set the file association to `tap_toolkit`) or via the "TAP cassette toolkit" action.
+
+**100% accurate via bundled TAPClean** — rather than approximating the dozens of commercial tape loaders, Quopus bundles the GPL **TAPClean** source (the reference C64/VIC20 tape preservation tool, based on Final TAP 2.76 by Subchrist Software, maintained by the TC Team) under `external/tapclean/`. On first use Quopus compiles the binary automatically (needs `gcc`/`cc` + `make`) and calls it for loader identification and file extraction. This gives the same results as running TAPClean by hand: all ~93 loader scanners (Ocean/Imagine, Novaload, Freeload, Turbotape 250, Visiload, Pavloda, System 3/IK, US Gold, Rack-It, Bleepload, Palace, Cyberload, and many more), correct file names, load/end addresses, checksums and CRC32s.
+
+- **Build / fallback**: the binary is built once and cached. On Windows without a compiler you can drop a prebuilt `tapclean.exe` into `external/tapclean/src/`. If TAPClean can't be built or run, Quopus falls back to a built-in pure-Python analyzer (`tap_analyzer.py`) that handles the CBM ROM loader plus the most common turbo loaders — not as complete, but no compiler required.
+
+**Block / file list** — the left pane lists every file found on the tape: the CBM ROM boot file(s) and each turbo-loaded part, with name, load–end address and size. Green = checksum OK, red = read errors. For a multi-stage game like R-Type Side 2 you'll see all 50 sub-files (M1–M8, G1–G8, S1–S8, …); a typical Ocean tape like Cobra lists 300+ blocks.
+
+**Tabs on the right:**
+- **Hex / ASCII** — side-by-side hex + ASCII dump of the selected block, with a **search bar**: type hex byte values (`A9 00 8D`, `A9008D`, or `0xA9 0x00`) with the **Hex** box ticked, or plain text (`LOAD`, `BOOT`) with it unticked. Text search is case-insensitive; hex is exact. Find next / Find prev wrap around, matches are highlighted yellow in both columns and scrolled into view.
+- **Histogram** — pulse-width distribution; the CBM short/medium/long bands (384/528/688 cycles) are colour-coded so you can see at a glance whether a tape is CBM-only or carries a turbo loader.
+- **Waveform** — the raw pulse stream (peak-per-pixel-column downsampling so even a 700 KB tape draws instantly).
+- **Tape info** — TAP version, platform (C64/VIC20/C16), video standard + clock, pulse count, duration, detected loaders.
+- **TAPClean report** — the full `tcreport.txt` (loader ID, recognition %, per-file detail, the five-part PASS/FAIL test suite). Saveable to a text file via **Save report**.
+
+**Toolbar actions:**
+- **Extract as PRG…** — save the selected block as a single `.prg` (2-byte LE load address + data).
+- **Extract all files…** — dump every file on the tape into a `<tapename>_prg/` folder, using TAPClean's naming convention `<seq> (<start>-<end>) [name].prg` (with `BAD` appended on read errors). When TAPClean ran, these are its exact PRGs.
+- **Run TAP in emulator** — hand the whole `.tap` to the configured C64 emulator (VICE autostarts a tape image directly, doing the real tape decode).
+- **Run file on U64** — send a selected file as a PRG to a configured Ultimate-64.
+- **Save report** / **Clean / optimize** / **Export WAV** — write the report, snap pulses to ideal widths and write a cleaned v1 TAP, or render the tape to a square-wave WAV.
+
 ### Ultimate 64 video stream viewer (Alt+U)
 Receives the live VIC video + SID audio stream from an [Ultimate 64](https://ultimate64.com) over the network and displays it in a window. Modeled after [u64view](https://github.com/DusteDdk/u64view) (the C original) and the .NET-based [TSB U64 Streamer](https://tsb.space/sdm_downloads/u64streamer/) — 50 fps PAL video, 48 kHz stereo audio, low latency, with bidirectional control.
 
@@ -1069,7 +1093,6 @@ Typical workflow:
 4. Within max 60 seconds the streamer notices and closes
 
 Address and value parsing accepts `$0400`, `0x0400`, `0400` (leading-zero hex convention), or plain decimal. Values out of range (`> $FF` for the trigger value, `> $FFFF` for the address) give a usage error before the window opens.
-
 
 ### C64 emulator integration
 Beyond VICE memory inspection, Quopus integrates an external C64 emulator for "Run in emulator" workflows:
@@ -1765,6 +1788,8 @@ Quopus looks for these binaries in a fixed order: (1) explicit path in `quopus.c
 
 Drop the binary into `<quopus>/external/` and Quopus picks it up on the next launch. No restart needed for viewers — the lookup happens each time you open a file. The directory contains a `README.txt` describing the convention.
 
+**TAPClean** is handled differently — its GPL **source** ships under `external/tapclean/src/` and Quopus compiles it on first use (needs `gcc`/`cc` + `make`), caching the binary. It powers the TAP cassette toolkit's loader identification and file extraction. On a machine without a compiler, drop a prebuilt `tapclean[.exe]` into `external/tapclean/src/`, or rely on the built-in Python fallback analyzer. See `external/tapclean/QUOPUS_INTEGRATION.md`.
+
 > **See also:** if `external_script` and `execute_command` aren't enough — e.g. you want a real Python function that pops dialogs, parses files, talks to APIs, then re-lists the panel — write it as a [custom module](#custom-modules-user-plugins) instead. Custom modules run in the Quopus process with full Qt access, get the active panel's selection passed in directly, and don't need any inter-process plumbing.
 
 ---
@@ -1855,7 +1880,7 @@ Drop the binary into `<quopus>/external/` and Quopus picks it up on the next lau
 - PRG (Commodore 64 program with 2-byte load address) — fully editable in-place
 - BIN (raw binary - treated as PRG) — fully editable in-place
 - CRT (cartridge image with `C64 CARTRIDGE` header + CHIP packets) — view only
-- TAP (tape image with `C64-TAPE-RAW` header) — view only
+- TAP (tape image with `C64-TAPE-RAW` header) — view in the disassembler, or open in the **TAP cassette toolkit** for loader ID, file listing, hex search and `.prg` extraction (see the dedicated section above)
 
 (SID files default to the SID Player above. To disassemble a SID's player code instead, change the `.sid` association to `c64disasm` in the File Associations dialog.)
 
@@ -1919,6 +1944,19 @@ quopus_commander/
     ├── amigaguide_viewer.py    # AmigaGuide hypertext parser + viewer
     ├── archive_viewer.py       # ZIP/TAR/LHA/RAR/GZ browser
     ├── c64_disasm.py           # 6502 disassembler with dual-pane viewer
+    ├── tap_decoder.py          # C64 .tap pulse decoder (CBM ROM +
+    │                           #   turbo), file/block reconstruction
+    ├── tap_analyzer.py         # pure-Python TAPClean-style analyzer
+    │                           #   (fallback loader detection + report)
+    ├── tap_loaders.py          # 124 loader fingerprints (from the
+    │                           #   TAPClean ft[] table)
+    ├── tap_scanners.py         # loader-specific Python scanners
+    │                           #   (Turbotape 250) used in fallback mode
+    ├── tap_tapclean.py         # wrapper for the bundled GPL TAPClean
+    │                           #   binary (built from external/tapclean/);
+    │                           #   primary loader ID + PRG extraction
+    ├── tap_toolkit.py          # TAP cassette toolkit dialog (block list,
+    │                           #   hex+search, histogram, waveform, report)
     ├── mod_player.py           # ProTracker-style module player
     │                           #   (libopenmpt via ctypes + sounddevice)
     ├── sid_player.py           # GoatTracker-style SID player

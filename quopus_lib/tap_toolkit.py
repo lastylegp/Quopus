@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 16:26
+# date_time: 2026-05-28 16:35
 """
 Commodore 64 .TAP cassette image toolkit - GUI dialog.
 
@@ -637,57 +637,62 @@ class _TapToolkitDialog(QDialog):
 
     def _parse_search_query(self):
         """Turn the search box content into a bytes() pattern.
-        Returns (pattern_bytes, error_message). In hex mode the
-        query is parsed as hex byte values (whitespace optional:
-        'DE AD', 'DEAD', '0xDE 0xAD' all work). In text mode it's
-        encoded as Latin-1 so any byte 0-255 typed literally works.
+        Returns (pattern_bytes, case_insensitive, error_message).
+        In hex mode the query is parsed as hex byte values
+        (whitespace optional: 'DE AD', 'DEAD', '0xDE 0xAD' all
+        work) and matched exactly. In text mode it's encoded as
+        Latin-1 and matched case-insensitively.
         """
         q = self._search_edit.text().strip()
         if not q:
-            return b"", "empty"
+            return b"", False, "empty"
         if self._search_hex_mode.isChecked():
             # strip 0x prefixes and whitespace, keep hex digits
             cleaned = q.replace("0x", "").replace("0X", "")
             cleaned = "".join(cleaned.split())
             if not cleaned:
-                return b"", "no hex digits"
+                return b"", False, "no hex digits"
             if len(cleaned) % 2 != 0:
-                return b"", "odd hex length"
+                return b"", False, "odd hex length"
             try:
-                return bytes.fromhex(cleaned), ""
+                return bytes.fromhex(cleaned), False, ""
             except ValueError:
-                return b"", "bad hex"
+                return b"", False, "bad hex"
         else:
             try:
-                return q.encode("latin-1"), ""
+                return q.encode("latin-1"), True, ""
             except UnicodeEncodeError:
-                return q.encode("utf-8", "replace"), ""
+                return q.encode("utf-8", "replace"), True, ""
 
     def _hex_search(self, forward=True):
         """Find the search pattern in the current block's bytes
-        and highlight + scroll to it. Wraps around at the ends."""
+        and highlight + scroll to it. Wraps around at the ends.
+        Text searches are case-insensitive; hex searches are
+        exact."""
         if not self._hex_bytes:
             self._search_status.setText("no data")
             return
-        pattern, err = self._parse_search_query()
+        pattern, ci, err = self._parse_search_query()
         if not pattern:
             self._search_status.setText(err or "—")
             return
 
         data = self._hex_bytes
+        hay = data.lower() if ci else data
+        pat = pattern.lower() if ci else pattern
         n = len(data)
         if forward:
             start = self._search_last_pos + 1
-            idx = data.find(pattern, start)
+            idx = hay.find(pat, start)
             if idx < 0:                  # wrap to top
-                idx = data.find(pattern, 0)
+                idx = hay.find(pat, 0)
         else:
             # search backwards before the last match
             end = (self._search_last_pos
                    if self._search_last_pos >= 0 else n)
-            idx = data.rfind(pattern, 0, max(0, end))
+            idx = hay.rfind(pat, 0, max(0, end))
             if idx < 0:                  # wrap to bottom
-                idx = data.rfind(pattern)
+                idx = hay.rfind(pat)
 
         if idx < 0:
             self._search_status.setText("not found")

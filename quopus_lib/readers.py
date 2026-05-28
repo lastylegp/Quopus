@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-05-28 16:35
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII
@@ -7,11 +7,11 @@ Viewers:
 """
 from pathlib import Path
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtGui import QFont, QColor, QTextCursor, QTextCharFormat
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QPlainTextEdit, QTextEdit, QComboBox, QInputDialog, QMessageBox,
-    QColorDialog,
+    QColorDialog, QLineEdit, QCheckBox,
 )
 
 from .palette import (
@@ -1560,6 +1560,55 @@ class HexReader(QDialog):
         nav.addWidget(btn_close)
         layout.addLayout(nav)
 
+        # --- search row ---
+        search = QHBoxLayout()
+        search.setSpacing(2)
+        slbl = QLabel(" Search ")
+        slbl.setStyleSheet(INFOBAR_QSS)
+        search.addWidget(slbl)
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(
+            "hex bytes (e.g. 'A9 00 8D') or text (e.g. 'LOAD')")
+        self.search_edit.setStyleSheet(
+            f"QLineEdit {{ background-color: {C.BLACK}; "
+            f"color: {C.WHITE}; border: 1px solid {C.SELECTED}; "
+            f"padding: 2px; }}")
+        self.search_edit.returnPressed.connect(
+            lambda: self._search(forward=True))
+        self.search_edit.textChanged.connect(
+            self._on_search_changed)
+        search.addWidget(self.search_edit, 1)
+        self.cb_search_hex = QCheckBox("Hex")
+        self.cb_search_hex.setChecked(True)
+        self.cb_search_hex.setStyleSheet(
+            f"QCheckBox {{ color: {C.WHITE}; }}")
+        self.cb_search_hex.setToolTip(
+            "On: query is hex byte values (A9 00 8D).\n"
+            "Off: query is ASCII/PETSCII text.")
+        self.cb_search_hex.stateChanged.connect(
+            lambda _=0: setattr(self, "_search_last", -1))
+        search.addWidget(self.cb_search_hex)
+        btn_sprev = QPushButton("Find prev")
+        btn_sprev.setStyleSheet(button_qss("blue"))
+        btn_sprev.setFixedWidth(80)
+        btn_sprev.clicked.connect(
+            lambda: self._search(forward=False))
+        search.addWidget(btn_sprev)
+        btn_snext = QPushButton("Find next")
+        btn_snext.setStyleSheet(button_qss("blue"))
+        btn_snext.setFixedWidth(80)
+        btn_snext.clicked.connect(
+            lambda: self._search(forward=True))
+        search.addWidget(btn_snext)
+        self.lbl_search = QLabel("")
+        self.lbl_search.setStyleSheet(INFOBAR_QSS)
+        self.lbl_search.setFixedWidth(110)
+        search.addWidget(self.lbl_search)
+        layout.addLayout(search)
+
+        # search state: byte offset of the last match (file-wide)
+        self._search_last = -1
+
         self.text = _HexEditWidget()
         self.text.setReadOnly(True)
         self.text.setStyleSheet(f"""
@@ -1684,6 +1733,193 @@ class HexReader(QDialog):
             self._render()
         except Exception as e:
             QMessageBox.warning(self, "Goto", str(e))
+
+    # ---- search --------------------------------------------------------
+
+    def _on_search_changed(self, _text):
+        """Editing the query restarts the search from the top."""
+        self._search_last = -1
+        self.lbl_search.setText("")
+
+    def _parse_search_pattern(self):
+        """Build the bytes() pattern from the query box.
+        Returns (pattern, case_insensitive, error_string).
+        Text searches are case-insensitive; hex searches match
+        the exact bytes."""
+        q = self.search_edit.text().strip()
+        if not q:
+            return b"", False, "empty"
+        if self.cb_search_hex.isChecked():
+            cleaned = q.replace("0x", "").replace("0X", "")
+            cleaned = "".join(cleaned.split())
+            if not cleaned:
+                return b"", False, "no hex"
+            if len(cleaned) % 2 != 0:
+                return b"", False, "odd length"
+            try:
+                return bytes.fromhex(cleaned), False, ""
+            except ValueError:
+                return b"", False, "bad hex"
+        else:
+            try:
+                return q.encode("latin-1"), True, ""
+            except UnicodeEncodeError:
+                return q.encode("utf-8", "replace"), True, ""
+
+    def _find_in_file(self, pattern, start, forward, ci=False):
+        """Search the whole file for `pattern`, reading in chunks
+        so big files don't need to be loaded fully. Returns the
+        byte offset of the next/previous match (with wrap-around)
+        or -1 if not found. When `ci` is True the match is
+        case-insensitive (ASCII letters only)."""
+        plen = len(pattern)
+        if plen == 0 or plen > self.file_size:
+            return -1
+        pat = pattern.lower() if ci else pattern
+
+        def _find(buf):
+            return (buf.lower().find(pat) if ci else buf.find(pat))
+
+        def _rfind(buf):
+            return (buf.lower().rfind(pat) if ci else buf.rfind(pat))
+
+        CHUNK = 1 << 20          # 1 MB
+        overlap = plen - 1
+        try:
+            with open(self.path, "rb") as f:
+                if forward:
+                    pos = max(0, start)
+                    while pos < self.file_size:
+                        f.seek(pos)
+                        buf = f.read(CHUNK + overlap)
+                        if not buf:
+                            break
+                        idx = _find(buf)
+                        if idx >= 0:
+                            return pos + idx
+                        pos += CHUNK
+                    # wrap: search from start of file up to `start`
+                    f.seek(0)
+                    buf = f.read(min(start + overlap, self.file_size))
+                    idx = _find(buf)
+                    return idx if idx >= 0 else -1
+                else:
+                    # backward: scan chunks ending at `start`
+                    end = start if start >= 0 else self.file_size
+                    pos = end
+                    while pos > 0:
+                        rstart = max(0, pos - CHUNK)
+                        f.seek(rstart)
+                        buf = f.read((pos - rstart) + overlap)
+                        idx = _rfind(buf)
+                        if idx >= 0 and (rstart + idx) < end:
+                            return rstart + idx
+                        pos = rstart
+                    # wrap: search from end of file back to `end`
+                    f.seek(0)
+                    buf = f.read(self.file_size)
+                    idx = _rfind(buf)
+                    return idx if idx >= 0 else -1
+        except Exception:
+            return -1
+
+    def _search(self, forward=True):
+        """Find the query in the file, jump to the page holding the
+        match, and highlight it."""
+        pattern, ci, err = self._parse_search_pattern()
+        if not pattern:
+            self.lbl_search.setText(err or "—")
+            return
+        if forward:
+            start = self._search_last + 1
+        else:
+            start = self._search_last if self._search_last >= 0 \
+                else self.file_size
+        idx = self._find_in_file(pattern, start, forward, ci=ci)
+        if idx < 0:
+            self.lbl_search.setText("not found")
+            self._search_last = -1
+            return
+        self._search_last = idx
+        # jump to the page containing idx (align page to 16)
+        page_off = idx - (idx % self.page_size)
+        page_off -= (page_off % 16)
+        if page_off != self.offset:
+            if self._dirty and not self._confirm_discard("search"):
+                return
+            self.offset = page_off
+            self._render()
+        self._highlight_match(idx, len(pattern))
+        self.lbl_search.setText(f"@ 0x{idx:08x}")
+
+    def _highlight_match(self, byte_off, length):
+        """Highlight `length` bytes starting at file offset
+        `byte_off` in the hex + ascii columns of the current page,
+        and scroll the match into view.
+
+        Line layout from _render:
+          "OOOOOOOO  HH HH ... HH  AAAA...A"
+          offset col = 8 hex digits + 2 spaces = 10
+          hex column = 47 chars, but _render inserts ONE extra
+          space at position 23 (between byte 7 and 8), so the hex
+          field is 48 chars wide, then 2 spaces, then ascii.
+        """
+        doc = self.text.document()
+        # clear old highlight
+        clear = QTextCharFormat()
+        ca = QTextCursor(doc)
+        ca.select(QTextCursor.SelectionType.Document)
+        ca.setCharFormat(clear)
+
+        hl = QTextCharFormat()
+        hl.setBackground(QColor(255, 220, 90))
+        hl.setForeground(QColor(20, 20, 20))
+
+        # offset of this page within the file
+        page_base = self.offset
+        # line geometry (must match _render exactly)
+        OFF_COL = 10            # 8 digits + 2 spaces
+        HEX_FIELD = 48          # 47 + 1 extra space at col 23
+        GAP = 2                 # spaces before ascii
+        ASCII_COL = OFF_COL + HEX_FIELD + GAP
+        first_pos = None
+
+        for k in range(length):
+            fileoff = byte_off + k
+            rel = fileoff - page_base
+            if rel < 0:
+                continue
+            row = rel // 16
+            col = rel % 16
+            # line length: ascii is 16 chars on full lines + \n
+            line_len = ASCII_COL + 16 + 1
+            row_start = row * line_len
+            # hex pair position: each byte is "HH " (3 chars); the
+            # extra space sits after the 8th byte (col >= 8 shifts
+            # by 1)
+            hex_pos = row_start + OFF_COL + col * 3
+            if col >= 8:
+                hex_pos += 1
+            cur = QTextCursor(doc)
+            cur.setPosition(hex_pos)
+            cur.setPosition(hex_pos + 2,
+                            QTextCursor.MoveMode.KeepAnchor)
+            cur.mergeCharFormat(hl)
+            # ascii char
+            asc_pos = row_start + ASCII_COL + col
+            cur2 = QTextCursor(doc)
+            cur2.setPosition(asc_pos)
+            cur2.setPosition(asc_pos + 1,
+                             QTextCursor.MoveMode.KeepAnchor)
+            cur2.mergeCharFormat(hl)
+            if first_pos is None:
+                first_pos = hex_pos
+
+        if first_pos is not None:
+            sc = QTextCursor(doc)
+            sc.setPosition(first_pos)
+            self.text.setTextCursor(sc)
+            self.text.ensureCursorVisible()
 
     # ---- edit mode -----------------------------------------------------
     def _toggle_edit(self, checked):
