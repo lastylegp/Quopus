@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 16:14
+# date_time: 2026-05-28 22:06
 """
 Wrapper around the real TAPClean command-line tool.
 
@@ -48,7 +48,71 @@ def _binary_name() -> str:
     return "tapclean.exe" if os.name == "nt" else "tapclean"
 
 
+def _binary_search_paths():
+    """All locations where Quopus looks for a prebuilt tapclean
+    binary. First hit wins. We accept all the places a user might
+    reasonably drop it:
+
+      1. external/tapclean/src/tapclean[.exe]  - canonical (next to
+         the build output / where `make` would put it)
+      2. external/tapclean/tapclean[.exe]      - sibling of the src
+         folder (some users put it here after a manual build)
+      3. external/tapclean[.exe]               - alongside the other
+         external tools (recoil2png, nibconv, unlzx)
+      4. system PATH                           - if tapclean is on
+         the user's PATH from a system install
+    """
+    bn = _binary_name()
+    ext_dir = _quopus_root() / "external"
+    candidates = [
+        ext_dir / "tapclean" / "src" / bn,
+        ext_dir / "tapclean" / bn,
+        ext_dir / bn,
+    ]
+    return candidates
+
+
+def _find_existing_binary():
+    """Return the first existing tapclean binary from the search
+    paths, or None. Also checks PATH as a last resort.
+
+    The lookup is case-insensitive on the filename so 'TAPClean.exe'
+    or 'tapclean' both match - on Windows users sometimes preserve
+    upstream capitalisation, and that mustn't break the wrapper."""
+    bn = _binary_name().lower()
+    for p in _binary_search_paths():
+        # Direct match (covers the case-sensitive case on
+        # Linux/macOS and the common case on Windows where
+        # Path.is_file() is case-insensitive anyway).
+        if p.is_file():
+            return p
+        # Case-insensitive sibling lookup: scan the parent
+        # directory for any file whose lower-cased name matches.
+        try:
+            parent = p.parent
+            if parent.is_dir():
+                for entry in parent.iterdir():
+                    if (entry.is_file()
+                            and entry.name.lower() == bn):
+                        return entry
+        except OSError:
+            pass
+    onpath = shutil.which(_binary_name())
+    if onpath:
+        return Path(onpath)
+    # also try Title case on PATH (some installs ship TAPClean.exe)
+    if os.name == "nt":
+        for nm in ("TAPClean.exe", "TAPClean"):
+            onpath = shutil.which(nm)
+            if onpath:
+                return Path(onpath)
+    return None
+
+
 def _binary_path() -> Path:
+    """Canonical build target (where `make` writes the binary).
+    Used by the build step; for lookup use _find_existing_binary()
+    which checks more locations."""
     return _tapclean_src_dir() / _binary_name()
 
 
@@ -62,11 +126,27 @@ _build_error = ""
 
 def _try_build() -> bool:
     """Compile TAPClean from the bundled source. Returns True on
-    success. Result is cached so we only try once per session."""
+    success. Result is cached so we only try once per session.
+
+    Building is intentionally restricted to non-Windows platforms.
+    On Windows the MinGW toolchain is rarely available, and when
+    a stale `make.exe` happens to be on PATH the build can fail
+    catastrophically (DLL load errors like 0xc000007b that bubble
+    up as a popup before we even see the return code). Windows
+    users should drop a prebuilt `tapclean.exe` into one of the
+    locations listed in `_binary_search_paths()`."""
     global _build_attempted, _build_error
     if _build_attempted:
         return _binary_path().exists()
     _build_attempted = True
+
+    if os.name == "nt":
+        _build_error = (
+            "Auto-build is disabled on Windows. Drop a prebuilt "
+            "tapclean.exe into external/tapclean/src/ (or the "
+            "external/ folder) to enable the toolkit. Quopus will "
+            "fall back to the built-in Python analyzer.")
+        return False
 
     src = _tapclean_src_dir()
     if not src.is_dir():
@@ -106,7 +186,10 @@ def _try_build() -> bool:
 
 def is_available() -> bool:
     """True if a usable TAPClean binary exists or can be built."""
-    if _binary_path().exists():
+    # Check every plausible drop-in location first - if the user
+    # placed a prebuilt binary anywhere reasonable, use it without
+    # touching the build system.
+    if _find_existing_binary() is not None:
         return True
     return _try_build()
 
@@ -318,15 +401,22 @@ def analyze(tap_path, extract_prgs=True,
     """
     if not is_available():
         return None
-    binary = _binary_path()
+    # Use whichever binary location actually exists - the user may
+    # have dropped a prebuilt tapclean.exe into external/ rather
+    # than external/tapclean/src/.
+    binary = _find_existing_binary() or _binary_path()
     tap_path = Path(tap_path)
     if not tap_path.is_file():
         return None
 
     work = Path(tempfile.mkdtemp(prefix="quopus_tapclean_"))
     try:
-        # TAPClean writes prg/ and tcreport.txt to the CWD, so run
-        # there. Use absolute path to the tap.
+        # TAPClean normally writes prg/ and tcreport.txt to the
+        # CWD, so we run it in a fresh temp dir. Some Windows
+        # builds of TAPClean instead write next to the executable
+        # (or to whichever directory was current when subprocess
+        # started Python) - we check both locations so the wrapper
+        # works regardless of the binary's behaviour.
         args = [str(binary), "-t", str(tap_path.resolve())]
         if extract_prgs:
             args.append("-doprg")
@@ -339,8 +429,23 @@ def analyze(tap_path, extract_prgs=True,
         except Exception:
             return None
 
-        report_txt = work / "tcreport.txt"
-        if report_txt.is_file():
+        # Where to look for the outputs - in order of preference:
+        # the temp work dir (the CWD we passed), and the directory
+        # the binary lives in (some TAPClean builds write there).
+        out_dirs = [work, binary.parent]
+        report_txt = None
+        prg_dir = None
+        for d in out_dirs:
+            cand_report = d / "tcreport.txt"
+            if cand_report.is_file() and report_txt is None:
+                report_txt = cand_report
+            cand_prg = d / "prg"
+            if cand_prg.is_dir() and prg_dir is None:
+                prg_dir = cand_prg
+            if report_txt and prg_dir:
+                break
+
+        if report_txt is not None:
             text = report_txt.read_text(errors="replace")
         else:
             # fall back to stdout
@@ -348,8 +453,7 @@ def analyze(tap_path, extract_prgs=True,
         rep = _parse_report(text)
 
         # Collect extracted PRGs and match to report files by seq.
-        prg_dir = work / "prg"
-        if extract_prgs and prg_dir.is_dir():
+        if extract_prgs and prg_dir is not None and prg_dir.is_dir():
             # persist the prg dir to a stable temp location so the
             # caller can read the files after this function returns
             keep = Path(tempfile.mkdtemp(prefix="quopus_prg_"))
@@ -358,6 +462,22 @@ def analyze(tap_path, extract_prgs=True,
                     shutil.copy2(p, keep / p.name)
             rep.prg_dir = keep
             _match_prgs_to_files(rep, keep)
+            # If TAPClean wrote into the binary's directory rather
+            # than our temp work dir, clean those droppings up so
+            # we don't leave junk next to external/tapclean[.exe].
+            if prg_dir.parent != work:
+                try:
+                    shutil.rmtree(prg_dir, ignore_errors=True)
+                except Exception:
+                    pass
+        # Also remove a stray tcreport.txt that landed next to
+        # the binary (same reason).
+        if (report_txt is not None
+                and report_txt.parent != work):
+            try:
+                report_txt.unlink()
+            except Exception:
+                pass
         return rep
     finally:
         shutil.rmtree(work, ignore_errors=True)

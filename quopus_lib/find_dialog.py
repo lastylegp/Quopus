@@ -1,3 +1,4 @@
+# date_time: 2026-05-28 21:47
 """Find Files dialog (Alt+F7) - Total Commander-style.
 
 Three search modes in a single tabbed dialog:
@@ -26,7 +27,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
     QTabWidget, QWidget, QListWidget, QCheckBox, QComboBox,
-    QListWidgetItem, QMessageBox, QPlainTextEdit,
+    QListWidgetItem, QMessageBox, QPlainTextEdit, QFileDialog,
 )
 
 from .palette import C, button_qss, SCROLLBAR_QSS
@@ -276,15 +277,36 @@ class FindDialog(QDialog):
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
 
-        # Header showing where we're searching - read-only label
-        # instead of editable + picker. Total Commander shows the
-        # path here as a non-modifiable header.
-        header = QLabel(f"Searching in: {self._root}")
-        header.setStyleSheet(
-            f"QLabel {{ background-color: {C.WB_GREY}; color: {C.BLACK}; "
+        # Header showing where we're searching. Editable line + a
+        # browse button, so you can search a parent (or any other)
+        # directory without first navigating the lister there.
+        # Total Commander has the same pattern (the "Suchen in"
+        # field with the >> picker).
+        root_row = QHBoxLayout()
+        root_row.setSpacing(4)
+        root_label = QLabel("Search in:")
+        root_label.setStyleSheet(
+            f"QLabel {{ color: {C.BLACK}; "
+            f"font-family: 'Topaz','Courier New',monospace; }}")
+        root_row.addWidget(root_label)
+        self._root_edit = QLineEdit(str(self._root))
+        self._root_edit.setStyleSheet(
+            f"QLineEdit {{ background-color: {C.BLACK}; "
+            f"color: {C.WHITE}; "
             f"font-family: 'Topaz','Courier New',monospace; "
-            f"padding: 4px; border: 1px solid {C.BLACK}; }}")
-        outer.addWidget(header)
+            f"border: 1px solid {C.BLACK}; padding: 2px; }}")
+        self._root_edit.setToolTip(
+            "Directory to search in (recursive). Defaults to the "
+            "active lister's path; edit or use the picker to "
+            "search a parent or different directory.")
+        root_row.addWidget(self._root_edit, 1)
+        btn_pick = QPushButton(">>")
+        btn_pick.setFixedWidth(36)
+        btn_pick.setStyleSheet(button_qss("blue"))
+        btn_pick.setToolTip("Pick a folder to search in")
+        btn_pick.clicked.connect(self._pick_root)
+        root_row.addWidget(btn_pick)
+        outer.addLayout(root_row)
 
         # ---- Tabs: Filename / Text / Hex ----
         self._tabs = QTabWidget()
@@ -430,10 +452,26 @@ class FindDialog(QDialog):
                   self._hex_edit, self._hex_glob, self._asm_glob):
             w.returnPressed.connect(self._start_search)
 
+    def _pick_root(self):
+        """Open a folder picker for the search root."""
+        cur = self._root_edit.text().strip() or str(self._root)
+        d = QFileDialog.getExistingDirectory(
+            self, "Search in folder", cur)
+        if d:
+            self._root_edit.setText(d)
+
     def _start_search(self):
         if self._worker is not None:
             return
-        root = self._root
+        # Read the search root from the edit field (the user may
+        # have edited it or used the picker since the dialog
+        # opened). Falls back to the lister's path on empty input.
+        root_text = self._root_edit.text().strip()
+        if not root_text:
+            root_text = str(Path(self._lister.current_path))
+            self._root_edit.setText(root_text)
+        root = Path(root_text).expanduser()
+        self._root = root
         if not root.is_dir():
             QMessageBox.warning(
                 self, "Find files",

@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 16:35
+# date_time: 2026-05-28 22:01
 """
 Commodore 64 .TAP cassette image toolkit - GUI dialog.
 
@@ -259,11 +259,12 @@ class _TapToolkitDialog(QDialog):
                 self._playlist_index < len(self._playlist) - 1)
 
         # ---- Summary bar ----
-        summary = QLabel(decoded.summary)
-        summary.setStyleSheet(
+        self._summary = QLabel(decoded.summary)
+        self._summary.setStyleSheet(
             f"font-size: {scaled_font_px(11, config)}px; "
             f"padding: 2px; color: #d0d0e0;")
-        v.addWidget(summary)
+        self._summary.setWordWrap(True)
+        v.addWidget(self._summary)
 
         # ---- Toolbar ----
         bar = QHBoxLayout()
@@ -465,12 +466,22 @@ class _TapToolkitDialog(QDialog):
         from . import tap_decoder as _td
 
         used_tapclean = False
+        tapclean_status = ""        # human-readable status line
         try:
             from . import tap_tapclean
             if tap_tapclean.is_available():
                 tcrep = tap_tapclean.analyze(
                     str(self.path), extract_prgs=True)
-                if tcrep is not None and tcrep.files:
+                if tcrep is None:
+                    tapclean_status = (
+                        "TAPClean failed to run on this tape "
+                        "(timeout, crash or bad path) - using "
+                        "Python fallback analyzer.")
+                elif not tcrep.files:
+                    tapclean_status = (
+                        "TAPClean ran but reported no files - "
+                        "using Python fallback analyzer.")
+                else:
                     self._tapclean = tcrep
                     self._report.setPlainText(tcrep.raw_report)
                     # Build the GUI block list from TAPClean's
@@ -510,8 +521,25 @@ class _TapToolkitDialog(QDialog):
                     if conv:
                         self.decoded.files = conv
                         used_tapclean = True
-        except Exception:
+                        tapclean_status = (
+                            f"TAPClean: {len(conv)} files "
+                            f"(loader: {tcrep.loader_id or '?'})")
+            else:
+                # No binary found and auto-build either disabled or
+                # failed - tell the user where to drop the binary.
+                tapclean_status = (
+                    "TAPClean binary not available - using "
+                    "Python fallback analyzer. " +
+                    (tap_tapclean.build_error() or
+                     "Drop a prebuilt tapclean[.exe] into "
+                     "external/tapclean/src/ or external/."))
+        except Exception as exc:
             used_tapclean = False
+            tapclean_status = (
+                f"TAPClean integration error: {exc} - using "
+                f"Python fallback analyzer.")
+        # remember for the info bar
+        self._tapclean_status = tapclean_status
 
         if not used_tapclean:
             # Fallback: built-in Python analyzer.
@@ -545,6 +573,26 @@ class _TapToolkitDialog(QDialog):
                         notes=(f"{fr.read_errors} read error(s)"
                                if fr.read_errors else "")))
                 self.decoded.files = conv
+
+        # Update the summary bar to reflect what actually happened
+        # so the user can see whether TAPClean ran and, if not,
+        # why it didn't. This is the difference between "loader
+        # said CBM ROM with 2 blocks" (wrong, just the Python
+        # fallback) and "TAPClean: 179 files (loader: Cyberload)"
+        # (right).
+        base = self.decoded.summary
+        # If we got real files via TAPClean, refresh the block
+        # count in the base summary since decoded.summary was
+        # built before the analyzer ran.
+        nfiles = len(self.decoded.files)
+        if used_tapclean:
+            base = (f"TAP v{self._tp.version} | "
+                    f"{self._tp.pulse_count} pulses | "
+                    f"{self._tp.duration_seconds:.1f}s | "
+                    f"{nfiles} file(s)")
+        if self._tapclean_status:
+            base = base + "  |  " + self._tapclean_status
+        self._summary.setText(base)
 
         # Populate
         self._populate_list()
