@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 08:20
+# date_time: 2026-05-28 12:38
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -92,6 +92,7 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("basic_editor",  "BASIC v2 editor"),
         ("disasm",        "C64 6502 disassembler"),
         ("crt_toolkit",   "CRT cartridge toolkit"),
+        ("tap_toolkit",   "TAP cassette toolkit"),
         ("asm64",         "Assembly64 browser"),
         ("run_emu",       "Run in C64 emulator (VICE/x64sc)"),
         ("run_u64",       "Run on Ultimate-64 (real hardware)"),

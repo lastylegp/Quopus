@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-05-28 12:38
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -1769,6 +1769,23 @@ class FileLister(QWidget):
                 QMessageBox.warning(
                     self, "CRT Toolkit",
                     f"Failed to open cartridge:\n{e}")
+        elif t == "tap_toolkit":
+            # C64 .tap cassette image: open the dedicated TAP
+            # toolkit (container inspection, CBM + turbo-loader
+            # pulse decoding, block list, hex view, PRG
+            # extraction, pulse histogram + waveform, run on
+            # emulator / U64). Non-modal so the user can browse
+            # the tape while doing other things in Quopus.
+            from .tap_toolkit import open_tap_toolkit
+            try:
+                mw = self.window()
+                cfg = getattr(mw, 'config', {}) if mw else {}
+                open_tap_toolkit(p, parent=self, config=cfg)
+            except Exception as e:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "TAP Toolkit",
+                    f"Failed to open tape image:\n{e}")
         elif t == "modplay":
             from .mod_player import ModPlayerDialog
             if ModPlayerDialog.check_audio_available(self):

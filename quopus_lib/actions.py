@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 08:20
+# date_time: 2026-05-28 12:38
 """Action dispatcher - uses selected_or_tagged for all operations."""
 import os
 import platform
@@ -2179,6 +2179,53 @@ class ActionDispatcher:
             dlg.show()
         except Exception as e:
             QMessageBox.warning(self.w, "Disassembler", str(e))
+
+    def act_tap_toolkit(self, src, dst, param):
+        """C64 .tap cassette image toolkit. Parses the TAP
+        container, decodes the pulse stream into CBM-standard and
+        turbo-loader byte blocks, lists the reconstructed files,
+        shows hex / pulse-histogram / waveform views, extracts
+        blocks as .prg, and can run the tape in an emulator or a
+        reconstructed file on the U64.
+
+        Multi-file support mirrors the CRT toolkit: if several
+        .tap files are selected in the lister, the first opens
+        with a Prev/Next navigation bar to step through the rest.
+        """
+        from .tap_toolkit import open_tap_toolkit
+        sel_paths = []
+        try:
+            sel_paths = [
+                p for p in src.selected_or_tagged()
+                if str(p).lower().endswith(".tap")]
+        except Exception:
+            sel_paths = []
+
+        if sel_paths:
+            playlist = [str(p) for p in sel_paths]
+            try:
+                open_tap_toolkit(
+                    playlist[0], parent=self.w,
+                    config=self.w.config,
+                    playlist=playlist if len(playlist) > 1
+                                          else None,
+                    playlist_index=0)
+            except Exception as e:
+                QMessageBox.warning(
+                    self.w, "TAP Toolkit", str(e))
+            return
+
+        path = self._pick_file_for_module(
+            src, (".tap",),
+            "Open C64 tape image",
+            "C64 tape image (*.tap);;All files (*)")
+        if path is None:
+            return
+        try:
+            open_tap_toolkit(path, parent=self.w,
+                             config=self.w.config)
+        except Exception as e:
+            QMessageBox.warning(self.w, "TAP Toolkit", str(e))
 
     def act_crt_toolkit(self, src, dst, param):
         """C64 .crt cartridge image inspector. Parses the VICE-format

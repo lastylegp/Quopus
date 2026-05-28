@@ -1,3 +1,4 @@
+# date_time: 2026-05-28 12:38
 """File associations: map extensions to internal/external viewer+editor.
 
 Each extension has up to two handlers:
@@ -95,7 +96,7 @@ DEFAULT_ASSOC = {
              "editor": {"mode": "internal", "type": "hex"}},
     ".crt": {"viewer": {"mode": "internal", "type": "crt_toolkit"},
              "editor": {"mode": "internal", "type": "hex"}},
-    ".tap": {"viewer": {"mode": "internal", "type": "c64disasm"},
+    ".tap": {"viewer": {"mode": "internal", "type": "tap_toolkit"},
              "editor": {"mode": "internal", "type": "hex"}},
     ".sid": {"viewer": {"mode": "internal", "type": "sidplay"},
              "editor": {"mode": "internal", "type": "hex"}},
@@ -475,5 +476,11 @@ def ensure_default_assoc(config):
                 # now we ship a real CRT cartridge toolkit (bank
                 # browser, EAPI/EasyFS/Yeti detection, blob scanner).
                 elif ext == ".crt" and cur_type == "c64disasm":
+                    cur["viewer"] = dict(handlers["viewer"])
+                # Special .tap upgrade: c64disasm was the old default,
+                # now we ship a real TAP cassette toolkit (CBM +
+                # turbo loader decode, PRG extraction, pulse
+                # histogram / waveform, run on emulator / U64).
+                elif ext == ".tap" and cur_type == "c64disasm":
                     cur["viewer"] = dict(handlers["viewer"])
     return config
