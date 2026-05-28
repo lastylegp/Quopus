@@ -1,4 +1,4 @@
-# date_time: 2026-05-27 20:14
+# date_time: 2026-05-28 08:20
 """Action dispatcher - uses selected_or_tagged for all operations."""
 import os
 import platform
@@ -1342,6 +1342,132 @@ class ActionDispatcher:
         dlg = CompareDialog(a, b, parent=self.w)
         dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         dlg.show()
+
+    def act_run_emu(self, src, dst, param):
+        """Run the selected file in the configured C64 emulator
+        (VICE / x64sc / Hoxs64 / ...). Same path the file-assoc
+        'c64emu' type uses, but as an explicit action so it can
+        be bound to an action button directly.
+
+        Takes the first selected/tagged file. If no emulator is
+        configured yet, run_in_c64_emulator() opens the config
+        dialog first. Works on .prg, .crt, .d64, .t64, .tap and
+        anything else the emulator's autostart accepts - we
+        don't restrict by extension here, the emulator decides.
+        """
+        from .c64_disasm import run_in_c64_emulator
+        from .config import save_config
+        paths = src.selected_or_tagged()
+        if not paths:
+            self._status("Run in emulator: nothing selected")
+            return
+        cfg = self.w.config
+        # Launch each selected file. For a single file this is
+        # the common case; for multiple, we start them in
+        # sequence (each detached) so e.g. a batch of demos can
+        # be fired off - though most emulators will just stack
+        # windows. We stop on the first hard failure (e.g. user
+        # cancelled the emulator-path config dialog) since that
+        # implies the rest would fail the same way.
+        for p in paths:
+            ok = run_in_c64_emulator(
+                p, self.w, cfg,
+                lambda: save_config(cfg) if cfg else None)
+            if not ok:
+                break
+
+    def act_run_u64(self, src, dst, param):
+        """Push the selected file to the active Ultimate-64 and
+        run it over HTTP (no temp file). Routes by extension:
+          .prg            -> runners:run_prg  (DMA load + run)
+          .crt            -> runners:run_crt  (cartridge reset)
+          .sid            -> runners:sidplay
+          .mod            -> runners:modplay
+          .d64/.d71/.d81/.g64 -> mount on drive A (readonly)
+        Anything else gets a "don't know how to run this on U64"
+        warning.
+
+        Uses the multi-device picker so the user chooses which
+        U64 when several are configured. Takes the first
+        selected/tagged file (running a whole batch on real
+        hardware doesn't make sense - the U64 can only run one
+        thing at a time).
+        """
+        from pathlib import Path
+        paths = src.selected_or_tagged()
+        if not paths:
+            self._status("Run on U64: nothing selected")
+            return
+        p = Path(str(paths[0]))
+        ext = p.suffix.lower()
+        # Device picker (multi-device aware, with Config button)
+        from .u64_devices import pick_device
+        device = pick_device(
+            self.w, self.w.config,
+            title="Run on U64",
+            prompt=f"Which Ultimate-64 should run "
+                   f"'{p.name}'?")
+        if device is None:
+            return
+        host = (device.get('host', '') or '').strip()
+        if not host:
+            QMessageBox.warning(
+                self.w, "Run on U64",
+                "The selected device has no host/IP set.")
+            return
+        password = device.get('password', '') or ''
+        http_port = int(device.get('http_port', 80))
+        try:
+            data = p.read_bytes()
+        except OSError as e:
+            QMessageBox.warning(
+                self.w, "Run on U64",
+                f"Could not read file:\n{e}")
+            return
+        if not data:
+            QMessageBox.warning(
+                self.w, "Run on U64",
+                f"'{p.name}' is empty - nothing to run.")
+            return
+        from .u64_streamer import (
+            u64_run_prg, u64_run_crt, u64_play_sid,
+            u64_play_mod, u64_mount_disk)
+        ok, msg = False, "Unsupported file type"
+        if ext == ".prg":
+            ok, msg = u64_run_prg(host, data,
+                                    password=password,
+                                    port=http_port)
+        elif ext == ".crt":
+            ok, msg = u64_run_crt(host, data,
+                                    password=password,
+                                    port=http_port)
+        elif ext == ".sid":
+            ok, msg = u64_play_sid(host, data,
+                                     password=password,
+                                     port=http_port)
+        elif ext == ".mod":
+            ok, msg = u64_play_mod(host, data,
+                                     password=password,
+                                     port=http_port)
+        elif ext in (".d64", ".d71", ".d81", ".g64"):
+            ok, msg = u64_mount_disk(host, data,
+                                       drive="a",
+                                       mode="readonly",
+                                       password=password,
+                                       port=http_port)
+        else:
+            QMessageBox.warning(
+                self.w, "Run on U64",
+                f"Don't know how to run a '{ext}' file on the "
+                f"U64.\n\nSupported: .prg, .crt, .sid, .mod, "
+                f".d64/.d71/.d81/.g64")
+            return
+        if ok:
+            self._status(f"Sent '{p.name}' to U64 at {host}")
+        else:
+            QMessageBox.warning(
+                self.w, "Run on U64",
+                f"U64 at {host} rejected the request:\n{msg}")
 
     def act_u64view(self, src, dst, param):
         """Open the Ultimate 64 video stream viewer.

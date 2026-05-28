@@ -1,3 +1,4 @@
+# date_time: 2026-05-28 08:20
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -92,6 +93,8 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("disasm",        "C64 6502 disassembler"),
         ("crt_toolkit",   "CRT cartridge toolkit"),
         ("asm64",         "Assembly64 browser"),
+        ("run_emu",       "Run in C64 emulator (VICE/x64sc)"),
+        ("run_u64",       "Run on Ultimate-64 (real hardware)"),
         ("u64view",       "Ultimate 64 stream viewer"),
         ("u64_config",    "Ultimate 64 device config"),
         ("vice_memory",   "VICE memory grab (binary monitor)"),

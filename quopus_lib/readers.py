@@ -1,4 +1,4 @@
-# date_time: 2026-05-27 22:22
+# date_time: 2026-05-28 00:26
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII

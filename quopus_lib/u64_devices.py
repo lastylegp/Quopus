@@ -1,3 +1,4 @@
+# date_time: 2026-05-28 07:49
 """Multi-Ultimate-64 device management for Quopus.
 
 Some users have several Ultimate-64 boards on the same network -
@@ -336,15 +337,111 @@ def pick_device(parent, config: dict,
             return None
     if len(devices) == 1:
         return devices[0]
+    # 2+ devices: custom picker dialog with a third "Config..."
+    # button alongside OK/Cancel so the user can jump straight
+    # into the device config without having to cancel, hunt for
+    # the config action, edit, and re-trigger. The config button
+    # reopens the picker afterwards so a freshly-added/edited
+    # device is immediately selectable.
+    return _pick_device_dialog(parent, config, title, prompt)
+
+
+def _pick_device_dialog(parent, config, title, prompt):
+    """Custom multi-device picker with OK / Cancel / Config...
+    buttons. Returns the chosen device dict or None.
+
+    Split out from pick_device so the post-config re-entry can
+    just call this again (the no-device and single-device fast
+    paths in pick_device don't need to repeat).
+    """
+    from PyQt6.QtWidgets import (
+        QDialog, QVBoxLayout, QHBoxLayout, QLabel, QComboBox,
+        QPushButton)
+    devices = get_devices(config)
+    if not devices:
+        return None
+    if len(devices) == 1:
+        return devices[0]
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setMinimumWidth(360)
+    v = QVBoxLayout(dlg)
+    v.addWidget(QLabel(prompt))
+
+    cmb = QComboBox()
     labels = [device_display_name(d, i)
               for i, d in enumerate(devices)]
+    cmb.addItems(labels)
     default_idx = get_active_index(config)
-    choice, ok = QInputDialog.getItem(
-        parent, title, prompt, labels, default_idx, False)
-    if not ok:
-        return None
-    try:
-        chosen_idx = labels.index(choice)
-    except ValueError:
-        return None
-    return devices[chosen_idx]
+    if 0 <= default_idx < len(labels):
+        cmb.setCurrentIndex(default_idx)
+    v.addWidget(cmb)
+
+    # Button row: Cancel | Config... | OK
+    # Config sits between Cancel and OK exactly as requested.
+    btn_row = QHBoxLayout()
+    btn_cancel = QPushButton("Cancel")
+    btn_config = QPushButton("Config...")
+    btn_config.setToolTip(
+        "Open the Ultimate-64 device configuration\n"
+        "to add, edit or remove devices. The picker\n"
+        "refreshes afterwards.")
+    btn_ok = QPushButton("OK")
+    btn_ok.setDefault(True)
+    btn_row.addStretch(1)
+    btn_row.addWidget(btn_cancel)
+    btn_row.addWidget(btn_config)
+    btn_row.addWidget(btn_ok)
+    v.addLayout(btn_row)
+
+    # Result holder - we use a mutable cell so the nested
+    # handlers can write to it.
+    result = {"value": None, "reopen": False}
+
+    def _do_ok():
+        idx = cmb.currentIndex()
+        if 0 <= idx < len(devices):
+            result["value"] = devices[idx]
+        dlg.accept()
+
+    def _do_cancel():
+        result["value"] = None
+        dlg.reject()
+
+    def _do_config():
+        # Open the config dialog. After it closes, we want to
+        # reopen the picker with the (possibly changed) device
+        # list - so we set a reopen flag and close this dialog
+        # with a neutral result. pick_device's caller path
+        # handles the reopen below.
+        result["reopen"] = True
+        dlg.accept()
+
+    btn_ok.clicked.connect(_do_ok)
+    btn_cancel.clicked.connect(_do_cancel)
+    btn_config.clicked.connect(_do_config)
+
+    dlg.exec()
+
+    if result["reopen"]:
+        # User clicked Config... - open the device config dialog,
+        # then re-run the picker so the new device list is shown.
+        try:
+            from .actions import open_u64_config_dialog
+        except ImportError:
+            open_u64_config_dialog = None
+        if open_u64_config_dialog is not None:
+            open_u64_config_dialog(parent, config)
+        # Re-evaluate after config: device count may have changed.
+        new_devices = get_devices(config)
+        if not new_devices:
+            return None
+        if len(new_devices) == 1:
+            return new_devices[0]
+        # Still multiple - show the picker again. Recursion depth
+        # is bounded by user patience; each Config... round trips
+        # through a modal dialog so there's no runaway loop.
+        return _pick_device_dialog(parent, config, title, prompt)
+
+    return result["value"]

@@ -1,4 +1,4 @@
-# date_time: 2026-05-27 16:20
+# date_time: 2026-05-28 00:26
 """Virtualized table model with tagged-items support (space key).
 Four columns: Name, Ext, Size, Date. Sortable via header click."""
 from datetime import datetime
