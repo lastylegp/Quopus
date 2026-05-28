@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 16:14
+# date_time: 2026-05-28 16:26
 """
 Commodore 64 .TAP cassette image toolkit - GUI dialog.
 
@@ -32,9 +32,13 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QSplitter, QLabel,
     QPushButton, QListWidget, QListWidgetItem, QTextEdit,
     QTabWidget, QFileDialog, QMessageBox, QWidget, QSizePolicy,
+    QLineEdit, QCheckBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QSize
-from PyQt6.QtGui import QPainter, QColor, QPen, QFont
+from PyQt6.QtGui import (
+    QPainter, QColor, QPen, QFont, QTextCursor,
+    QTextCharFormat,
+)
 
 from . import tap_decoder as td
 from .config import scaled_font_px
@@ -312,12 +316,52 @@ class _TapToolkitDialog(QDialog):
         hex_outer = QWidget()
         hl = QVBoxLayout(hex_outer)
         hl.setContentsMargins(2, 2, 2, 2)
+
+        # --- search bar ---
+        search_row = QHBoxLayout()
+        search_row.setContentsMargins(0, 0, 0, 0)
+        self._search_edit = QLineEdit()
+        self._search_edit.setPlaceholderText(
+            "Search… (hex bytes like 'DE AD BE EF' "
+            "or text like 'BOOT')")
+        self._search_edit.returnPressed.connect(
+            lambda: self._hex_search(forward=True))
+        self._search_edit.textChanged.connect(
+            self._on_search_text_changed)
+        self._search_hex_mode = QCheckBox("Hex")
+        self._search_hex_mode.setToolTip(
+            "On: interpret the query as hex byte values "
+            "(e.g. 'DEAD BEEF').\n"
+            "Off: interpret as ASCII/PETSCII text.")
+        # auto-detect default: if it looks like hex, tick it
+        self._search_hex_mode.setChecked(True)
+        self._search_hex_mode.stateChanged.connect(
+            lambda _=0: setattr(self, "_search_last_pos", -1))
+        self._btn_find_next = QPushButton("Find next")
+        self._btn_find_next.clicked.connect(
+            lambda: self._hex_search(forward=True))
+        self._btn_find_prev = QPushButton("Find prev")
+        self._btn_find_prev.clicked.connect(
+            lambda: self._hex_search(forward=False))
+        self._search_status = QLabel("")
+        self._search_status.setMinimumWidth(90)
+        search_row.addWidget(self._search_edit, 1)
+        search_row.addWidget(self._search_hex_mode)
+        search_row.addWidget(self._btn_find_prev)
+        search_row.addWidget(self._btn_find_next)
+        search_row.addWidget(self._search_status)
+        hl.addLayout(search_row)
+
         self._hex = QTextEdit()
         self._hex.setReadOnly(True)
         self._hex.setFont(get_mono_font(10))
         self._hex.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         hl.addWidget(self._hex)
         self._tabs.addTab(hex_outer, "Hex / ASCII")
+
+        # search state
+        self._hex_bytes = b""        # raw bytes of current block
+        self._search_last_pos = -1   # last matched byte offset
 
         # Histogram tab
         hist_outer = QWidget()
@@ -573,9 +617,150 @@ class _TapToolkitDialog(QDialog):
         fe = self._selected_entry()
         if fe is None:
             self._hex.clear()
+            self._hex_bytes = b""
+            self._search_last_pos = -1
+            self._update_button_states()
             return
+        self._hex_bytes = fe.data or b""
+        self._search_last_pos = -1
+        self._search_status.setText("")
         self._hex.setPlainText(self._hexdump(fe.data))
         self._update_button_states()
+
+    # ----- hex search -----
+
+    def _on_search_text_changed(self, _text):
+        """A new query means the next 'Find' should start from the
+        top, not from the previous match."""
+        self._search_last_pos = -1
+        self._search_status.setText("")
+
+    def _parse_search_query(self):
+        """Turn the search box content into a bytes() pattern.
+        Returns (pattern_bytes, error_message). In hex mode the
+        query is parsed as hex byte values (whitespace optional:
+        'DE AD', 'DEAD', '0xDE 0xAD' all work). In text mode it's
+        encoded as Latin-1 so any byte 0-255 typed literally works.
+        """
+        q = self._search_edit.text().strip()
+        if not q:
+            return b"", "empty"
+        if self._search_hex_mode.isChecked():
+            # strip 0x prefixes and whitespace, keep hex digits
+            cleaned = q.replace("0x", "").replace("0X", "")
+            cleaned = "".join(cleaned.split())
+            if not cleaned:
+                return b"", "no hex digits"
+            if len(cleaned) % 2 != 0:
+                return b"", "odd hex length"
+            try:
+                return bytes.fromhex(cleaned), ""
+            except ValueError:
+                return b"", "bad hex"
+        else:
+            try:
+                return q.encode("latin-1"), ""
+            except UnicodeEncodeError:
+                return q.encode("utf-8", "replace"), ""
+
+    def _hex_search(self, forward=True):
+        """Find the search pattern in the current block's bytes
+        and highlight + scroll to it. Wraps around at the ends."""
+        if not self._hex_bytes:
+            self._search_status.setText("no data")
+            return
+        pattern, err = self._parse_search_query()
+        if not pattern:
+            self._search_status.setText(err or "—")
+            return
+
+        data = self._hex_bytes
+        n = len(data)
+        if forward:
+            start = self._search_last_pos + 1
+            idx = data.find(pattern, start)
+            if idx < 0:                  # wrap to top
+                idx = data.find(pattern, 0)
+        else:
+            # search backwards before the last match
+            end = (self._search_last_pos
+                   if self._search_last_pos >= 0 else n)
+            idx = data.rfind(pattern, 0, max(0, end))
+            if idx < 0:                  # wrap to bottom
+                idx = data.rfind(pattern)
+
+        if idx < 0:
+            self._search_status.setText("not found")
+            self._search_last_pos = -1
+            return
+
+        self._search_last_pos = idx
+        self._highlight_hex_range(idx, len(pattern))
+        # 1-based count of matches would be nice but keep it simple
+        self._search_status.setText(f"@ ${idx:04X}")
+
+    def _highlight_hex_range(self, byte_off, length):
+        """Select the bytes [byte_off, byte_off+length) in both the
+        hex column and the ASCII column of the dump, and scroll the
+        first match into view.
+
+        The dump line layout (see _hexdump) is:
+            "OOOO  HH HH HH ... HH  AAAAAAAAAAAAAAAA"
+        offset col = 4 chars + 2 spaces = 6
+        each hex byte = 3 chars (2 digits + 1 space), 16 per row
+        ascii starts after 6 + 47 + 2 = 55
+        """
+        doc = self._hex.document()
+
+        # clear previous highlight
+        plain_fmt = QTextCharFormat()
+        cur_all = QTextCursor(doc)
+        cur_all.select(QTextCursor.SelectionType.Document)
+        cur_all.setCharFormat(plain_fmt)
+
+        hl_fmt = QTextCharFormat()
+        hl_fmt.setBackground(QColor(255, 220, 90))
+        hl_fmt.setForeground(QColor(20, 20, 20))
+
+        first_block_pos = None
+        # Build a cursor by counting characters per line. Each dump
+        # line is fixed-width; we compute the absolute character
+        # position of each byte's hex pair.
+        for k in range(length):
+            off = byte_off + k
+            row = off // 16
+            col = off % 16
+            # characters before this row:
+            #   each row prints 4(off)+2(sp)+47(hex)+2(sp)+
+            #   up-to-16(ascii) + 1 newline
+            # but ascii length == bytes in that row; for full rows
+            # it's 16. Rows before `row` are all full (16 bytes)
+            # except possibly the data isn't a multiple of 16, but
+            # earlier rows ARE full, so 16 each.
+            line_len = 6 + 47 + 2 + 16 + 1   # 72
+            row_start = row * line_len
+            hex_char = row_start + 6 + col * 3   # start of "HH"
+            cur = QTextCursor(doc)
+            cur.setPosition(hex_char)
+            cur.setPosition(hex_char + 2,
+                            QTextCursor.MoveMode.KeepAnchor)
+            cur.mergeCharFormat(hl_fmt)
+            # ascii char
+            asc_char = row_start + 6 + 47 + 2 + col
+            cur2 = QTextCursor(doc)
+            cur2.setPosition(asc_char)
+            cur2.setPosition(asc_char + 1,
+                             QTextCursor.MoveMode.KeepAnchor)
+            cur2.mergeCharFormat(hl_fmt)
+            if first_block_pos is None:
+                first_block_pos = hex_char
+
+        # scroll the first matched byte into view
+        if first_block_pos is not None:
+            sc = QTextCursor(doc)
+            sc.setPosition(first_block_pos)
+            self._hex.setTextCursor(sc)
+            self._hex.ensureCursorVisible()
 
     @staticmethod
     def _hexdump(data: bytes) -> str:
