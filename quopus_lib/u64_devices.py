@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 07:49
+# date_time: 2026-05-28 08:36
 """Multi-Ultimate-64 device management for Quopus.
 
 Some users have several Ultimate-64 boards on the same network -
@@ -397,12 +397,13 @@ def _pick_device_dialog(parent, config, title, prompt):
 
     # Result holder - we use a mutable cell so the nested
     # handlers can write to it.
-    result = {"value": None, "reopen": False}
+    result = {"value": None, "reopen": False, "chosen_idx": -1}
 
     def _do_ok():
         idx = cmb.currentIndex()
         if 0 <= idx < len(devices):
             result["value"] = devices[idx]
+            result["chosen_idx"] = idx
         dlg.accept()
 
     def _do_cancel():
@@ -443,5 +444,23 @@ def _pick_device_dialog(parent, config, title, prompt):
         # is bounded by user patience; each Config... round trips
         # through a modal dialog so there's no runaway loop.
         return _pick_device_dialog(parent, config, title, prompt)
+
+    # User picked a device with OK - remember it as the new
+    # default so the next time the picker opens (Run on U64,
+    # Stream, Mount disk, ...) this device is pre-selected.
+    # We persist to config AND save it to disk so the choice
+    # survives a Quopus restart, not just the session. Cancel
+    # and Config... don't reach here with a chosen_idx so the
+    # default only moves on a deliberate OK selection.
+    if result["chosen_idx"] >= 0:
+        set_active_index(config, result["chosen_idx"])
+        try:
+            from .config import save_config
+            save_config(config)
+        except Exception:
+            # Non-fatal: the in-memory default is updated even
+            # if the disk write fails, so the picker still
+            # remembers within the session.
+            pass
 
     return result["value"]

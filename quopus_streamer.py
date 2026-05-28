@@ -1,66 +1,84 @@
 #!/usr/bin/env python3
-# date_time: 2026-05-27 16:20
-"""Standalone-Starter fuer den U64-Stream-Viewer.
+# date_time: 2026-05-28 08:47
+"""Standalone launcher for the U64 video-stream viewer.
 
-Erlaubt es den U64-Streamer ohne Quopus zu starten - z.B. von einem
-BBS-Door, der den Viewer nach erfolgreicher Anmeldung aufpoppt und
-ihn beim Logout wieder zumacht.
+Lets you start the U64 streamer without Quopus - e.g. from a
+BBS door that pops the viewer up after a successful login and
+closes it again on logout.
 
-Host, Ports und Passwort kommen aus der normalen Quopus-Config
-(~/.quopus/quopus.cfg) - dieselben Werte die auch der eingebaute
-Streamer benutzt. Das Skript hat selbst keine eigenen Connection-
-Settings.
+Host, ports and password come from the normal Quopus config
+(~/.quopus/quopus.cfg) - the same values the built-in streamer
+uses. The script has no connection settings of its own.
 
-Aufruf:
+Usage:
     python quopus_streamer.py
-        Streamer starten, kein Auto-Close. Wie 'U64 streamer' in Quopus,
-        nur ohne Quopus-Fenster.
+        Start the streamer, no auto-close. Same as 'U64 streamer'
+        inside Quopus, just without the Quopus window.
 
     python quopus_streamer.py --minimal
-        Streamer im "Kiosk"-Mode starten: nur das Video-Bild, KEINE
-        Buttons, Toolbar, Hostzeile, F-Tasten-Reihe, KEINE OS-
-        Titelzeile. Linksklick im Bild + ziehen verschiebt das
-        Fenster (Picture = Drag-Handle, weil keine Titelzeile da).
-        Rechtsklick irgendwo im Fenster oeffnet "Close Streamer?"
-        Yes/No. Position wird in CONFIG_DIR/u64_streamer_minimal_pos.json
-        gespeichert sobald die Maustaste losgelassen wird - beim
-        naechsten --minimal-Start landet das Fenster an derselben
-        Stelle. Default-Skalierung: 2x (768x544).
+        Start the streamer in "kiosk" mode: only the video
+        picture, NO buttons, toolbar, host row or F-key row, and
+        NO OS title bar. Left-click in the picture and drag to
+        move the window (the picture is the drag handle since
+        there's no title bar). Right-click anywhere in the
+        window opens a "Close Streamer?" Yes/No prompt. The
+        window position is saved to
+        CONFIG_DIR/u64_streamer_minimal_pos.json as soon as you
+        release the mouse - the next --minimal start places the
+        window in the same spot. Default scale: 4 (768x544).
 
     python quopus_streamer.py --minimal=N
-        Wie --minimal, aber mit explizitem Skalierungsfaktor N
-        (1..8) aus dieser Tabelle:
-          --minimal=1      192 x  136   (Halb-VIC-II, kleinste sinnvolle)
+        Like --minimal but with an explicit scale factor N
+        (1..8) from this table:
+          --minimal=1      192 x  136   (half VIC-II, smallest useful)
           --minimal=2      384 x  272   (native VIC-II 1:1)
           --minimal=3      576 x  408
-          --minimal=4      768 x  544   (Default)
+          --minimal=4      768 x  544   (default)
           --minimal=5      960 x  680
           --minimal=6     1152 x  816
           --minimal=7     1536 x 1088
-          --minimal=8     1920 x 1360   (~FullHD)
-        Bequem fuer BBS-Doors die einen bestimmten Platz auf
-        einem Multi-Monitor-Setup nutzen wollen.
+          --minimal=8     1920 x 1360   (~Full HD)
+        Handy for BBS doors that want to use a specific spot on
+        a multi-monitor setup.
 
     python quopus_streamer.py BBS WATCH_ADDR WATCH_VALUE
-        Streamer starten, plus alle 60 Sekunden WATCH_ADDR pollen.
-        Sobald das Byte dort gleich WATCH_VALUE ist, Fenster schliessen.
+        Start the streamer plus poll WATCH_ADDR every 60 seconds.
+        As soon as the byte there equals WATCH_VALUE, close the
+        window.
 
-        Beispiel:
+        Example:
             python quopus_streamer.py BBS 0400 0
 
-        Pollt $0400; sobald da $00 steht (etwa weil das BBS-Door
-        beim Logout dorthin eine 0 schreibt), endet der Streamer.
+        Polls $0400; once it reads $00 there (e.g. because the
+        BBS door writes a 0 to it on logout) the streamer exits.
 
     python quopus_streamer.py --minimal BBS 0400 0
-        Beides kombinierbar - Kiosk-Mode plus Auto-Close-Watch.
+        Both can be combined - kiosk mode plus auto-close watch.
 
-WATCH_ADDR und WATCH_VALUE akzeptieren $hex, 0xhex, oder dezimal.
-Bei reinen Ziffern mit fuehrender 0 und 3+ Stellen (z.B. '0400')
-wird hex angenommen, sonst dezimal.
+    python quopus_streamer.py --device=N
+    python quopus_streamer.py --device=NAME
+        Explicitly choose which Ultimate-64 from the config to
+        stream from. N is the 1-based index (--device=1 = first
+        device), NAME is the device name (case-insensitive,
+        --device=u64lab). Without --device:
+          - exactly 1 device configured -> it is used
+          - multiple devices + normal start -> a chooser dialog
+            appears, remembering your last pick (pre-selected on
+            the next start)
+          - multiple devices + --minimal -> the last-used device
+            is taken WITHOUT a dialog (kiosk/BBS must never block
+            on user input)
+        For BBS-door automation ALWAYS set --device explicitly so
+        that no dialog can ever appear. Example:
+            python quopus_streamer.py --minimal=4 --device=2 BBS 0400 0
 
-Der erste Polling-Tick erfolgt 60 Sekunden nach dem Start - der
-User hat also Zeit den Stream zu sehen bevor das Auto-Close-System
-losgeht.
+WATCH_ADDR and WATCH_VALUE accept $hex, 0xhex, or decimal. Pure
+digits with a leading 0 and 3+ places (e.g. '0400') are treated
+as hex, otherwise decimal.
+
+The first polling tick happens 60 seconds after start - so the
+user has time to see the stream before the auto-close system
+kicks in.
 """
 
 import os
@@ -120,6 +138,13 @@ def main():
     #   --minimal=8     -> 1920x1360 (~FullHD)
     minimal_mode = False
     minimal_scale = 4          # default if --minimal without =N
+    # --device=N (1-based index) or --device=name selects which
+    # configured Ultimate-64 to stream from when several are in
+    # the config. Without it: if exactly one device, use it; if
+    # several, show a picker (unless --minimal, see below). For
+    # BBS-door automation pass --device explicitly so no dialog
+    # ever appears.
+    device_selector = None
     new_argv = []
     for a in argv:
         if a == '--minimal':
@@ -137,6 +162,8 @@ def main():
                 print(f"--minimal scale {minimal_scale} out of "
                       f"range (use 1..8)", file=sys.stderr)
                 sys.exit(2)
+        elif a.startswith('--device='):
+            device_selector = a.split('=', 1)[1]
         else:
             new_argv.append(a)
     argv = new_argv
@@ -170,7 +197,8 @@ def main():
                     file=sys.stderr)
             sys.exit(2)
     else:
-        print("Usage: quopus_streamer.py [--minimal[=1..8]] [BBS ADDR VALUE]\n"
+        print("Usage: quopus_streamer.py [--minimal[=1..8]] "
+              "[--device=N|NAME] [BBS ADDR VALUE]\n"
               "       (use --help for details)", file=sys.stderr)
         sys.exit(2)
 
@@ -187,24 +215,6 @@ def main():
     from quopus_lib.config import load_config
 
     cfg = load_config()
-    # Selbe Keys wie in actions.py:act_u64view - so ist garantiert
-    # dass standalone und Quopus-eingebauter Streamer identische
-    # Einstellungen sehen. Wenn der User Host/Port in Quopus aendert,
-    # wirkt das automatisch hier.
-    host = cfg.get('u64_host', '') or ""
-    try:
-        video_port = int(cfg.get('u64_video_port', PORT_VIDEO))
-        audio_port = int(cfg.get('u64_audio_port', PORT_AUDIO))
-        telnet_port = int(cfg.get('u64_telnet_port', PORT_TELNET))
-        http_port = int(cfg.get('u64_http_port', PORT_HTTP))
-    except (ValueError, TypeError):
-        video_port = PORT_VIDEO
-        audio_port = PORT_AUDIO
-        telnet_port = PORT_TELNET
-        http_port = PORT_HTTP
-    password = cfg.get('u64_password', '') or ""
-    video_only = bool(cfg.get('u64_video_only', False))
-    always_on_top = bool(cfg.get('u64_always_on_top', False))
 
     app = QApplication(sys.argv)
     app.setApplicationName("U64 Streamer")
@@ -220,6 +230,127 @@ def main():
             app.setWindowIcon(QIcon(str(icon_path)))
     except Exception:
         pass
+
+    # ---- Resolve which Ultimate-64 device to stream from -------
+    # The config can hold several devices (u64_devices list). We
+    # pick one of them and copy its connection details into the
+    # local host/port/etc variables. Resolution order:
+    #   1. --device=N (1-based) or --device=name  -> explicit pick
+    #   2. exactly one device configured           -> use it
+    #   3. multiple devices, NOT minimal mode      -> show picker
+    #      (remembers last choice via u64_active_device)
+    #   4. multiple devices, minimal mode          -> use the
+    #      active/last-used device silently (kiosk/BBS use must
+    #      not block on a dialog)
+    # Falls through to the legacy single-key read if the multi-
+    # device module isn't available for some reason.
+    host = ""
+    video_port = PORT_VIDEO
+    audio_port = PORT_AUDIO
+    telnet_port = PORT_TELNET
+    http_port = PORT_HTTP
+    password = ""
+    video_only = False
+    always_on_top = False
+
+    chosen_device = None
+    try:
+        from quopus_lib.u64_devices import (
+            get_devices, get_active_index, set_active_index,
+            device_display_name, pick_device)
+        devices = get_devices(cfg)
+    except Exception:
+        devices = []
+
+    if devices:
+        if device_selector is not None:
+            # Explicit --device=N or --device=name
+            sel = device_selector.strip()
+            chosen_device = None
+            # Try 1-based numeric index first
+            if sel.isdigit():
+                idx = int(sel) - 1
+                if 0 <= idx < len(devices):
+                    chosen_device = devices[idx]
+                    set_active_index(cfg, idx)
+                else:
+                    print(f"--device={sel}: index out of range "
+                          f"(have {len(devices)} device(s))",
+                          file=sys.stderr)
+                    sys.exit(2)
+            else:
+                # Match by name (case-insensitive)
+                for i, d in enumerate(devices):
+                    if (d.get('name', '') or '').lower() \
+                            == sel.lower():
+                        chosen_device = d
+                        set_active_index(cfg, i)
+                        break
+                if chosen_device is None:
+                    names = ", ".join(
+                        d.get('name', '?') for d in devices)
+                    print(f"--device={sel!r}: no device with "
+                          f"that name. Configured: {names}",
+                          file=sys.stderr)
+                    sys.exit(2)
+        elif len(devices) == 1:
+            chosen_device = devices[0]
+        elif minimal_mode:
+            # Kiosk/BBS: never block on a dialog. Use the active
+            # (last-used) device silently.
+            ai = get_active_index(cfg)
+            if 0 <= ai < len(devices):
+                chosen_device = devices[ai]
+            else:
+                chosen_device = devices[0]
+        else:
+            # Multiple devices, interactive: show the picker.
+            # pick_device remembers the choice as the new active
+            # device (persisted), so next launch pre-selects it.
+            chosen_device = pick_device(
+                None, cfg,
+                title="U64 Streamer",
+                prompt="Which Ultimate-64 should the streamer "
+                       "connect to?")
+            if chosen_device is None:
+                # User cancelled - nothing to stream.
+                print("No device selected - exiting.")
+                sys.exit(0)
+
+    if chosen_device is not None:
+        host = (chosen_device.get('host', '') or '').strip()
+        try:
+            video_port = int(chosen_device.get(
+                'video_port', PORT_VIDEO))
+            audio_port = int(chosen_device.get(
+                'audio_port', PORT_AUDIO))
+            telnet_port = int(chosen_device.get(
+                'telnet_port', PORT_TELNET))
+            http_port = int(chosen_device.get(
+                'http_port', PORT_HTTP))
+        except (ValueError, TypeError):
+            pass
+        password = chosen_device.get('password', '') or ''
+        video_only = bool(chosen_device.get('video_only', False))
+        always_on_top = bool(
+            chosen_device.get('always_on_top', False))
+    else:
+        # No multi-device list available - fall back to the
+        # legacy single-device keys so old configs still work.
+        host = cfg.get('u64_host', '') or ""
+        try:
+            video_port = int(cfg.get('u64_video_port', PORT_VIDEO))
+            audio_port = int(cfg.get('u64_audio_port', PORT_AUDIO))
+            telnet_port = int(cfg.get('u64_telnet_port', PORT_TELNET))
+            http_port = int(cfg.get('u64_http_port', PORT_HTTP))
+        except (ValueError, TypeError):
+            video_port = PORT_VIDEO
+            audio_port = PORT_AUDIO
+            telnet_port = PORT_TELNET
+            http_port = PORT_HTTP
+        password = cfg.get('u64_password', '') or ""
+        video_only = bool(cfg.get('u64_video_only', False))
+        always_on_top = bool(cfg.get('u64_always_on_top', False))
 
     # Wenn kein Host konfiguriert ist: erstmal melden statt einfach
     # ein leeres Fenster aufmachen. Der User soll wissen dass er erst
