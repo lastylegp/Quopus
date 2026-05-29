@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 12:38
+# date_time: 2026-05-29 18:40
 """Action dispatcher - uses selected_or_tagged for all operations."""
 import os
 import platform
@@ -3868,6 +3868,8 @@ class ActionDispatcher:
         menu.addAction("File associations...", lambda: self._cfg_file_assoc())
         menu.addAction("Settings (font, appearance)...",
                          lambda: self._cfg_appearance())
+        menu.addAction("Drive button style...",
+                         lambda: self._cfg_drive_button_style())
         menu.addSeparator()
         # C64 emulator configuration - Pfad und Args-Template fuer
         # VICE (oder Hoxs64/CCS64). Wird sowohl vom 'Run in emulator'-
@@ -3916,6 +3918,13 @@ class ActionDispatcher:
         # action get their label / handler updated.
         try:
             self.w._rebuild_buttons()
+        except Exception:
+            pass
+        # Rebuild the menu bar too - it's built from the same
+        # action_catalog, so any newly-loaded custom modules need
+        # to show up under their Custom Modules entry.
+        try:
+            self.w._build_menu_bar()
         except Exception:
             pass
         if errors:
@@ -3981,6 +3990,37 @@ class ActionDispatcher:
         if dlg.exec() == QDialog.DialogCode.Accepted:
             save_config(self.w.config)
             self._status("File associations saved")
+
+    def _cfg_drive_button_style(self):
+        """Open the drive-button-style picker dialog. Six styles
+        are available (Amiga drawer, floppy, HDD, pill, LED, mixed
+        per drive type, or plain text). The picker shows a live
+        preview of each style; clicking Apply or OK persists the
+        choice to drive_button_style in quopus.cfg and re-renders
+        BOTH listers' drive bars immediately - no restart needed.
+        """
+        from . import drive_icons
+        current = self.w.config.get("drive_button_style", "amiga")
+
+        def _apply(new_style):
+            # Persist + re-render both listers' drive bars.
+            self.w.config["drive_button_style"] = new_style
+            save_config(self.w.config)
+            for lst in (self.w.left_lister, self.w.right_lister):
+                try:
+                    lst._mw_config = self.w.config
+                except Exception:
+                    pass
+                try:
+                    lst.refresh_drives_bar()
+                except Exception as e:
+                    print(f"[cfg] refresh_drives_bar: {e}")
+            self._status(
+                f"Drive button style: "
+                f"{drive_icons.STYLE_LABELS.get(new_style, new_style)}")
+
+        drive_icons.open_style_picker(
+            self.w, current_style=current, on_apply=_apply)
 
     def _cfg_appearance(self):
         """Settings dialog: app font family, scale factor (%),
@@ -4157,6 +4197,56 @@ class ActionDispatcher:
             lambda _b: _refresh_preview())
         _refresh_preview()
 
+        # --- Drive buttons -----------------------------------
+        # Two controls: a checkbox to show/hide the drive bar
+        # entirely, and a dropdown picking which icon style to
+        # use (Amiga drawer, floppy, HDD, pill, LED, mixed, or
+        # plain). Both are applied via the same _do_apply path
+        # so OK persists them with the rest of the appearance
+        # settings.
+        from . import drive_icons as _di
+        gb_drives = QGroupBox("Drive buttons (above path edit)")
+        gb_drives_lay = QVBoxLayout(gb_drives)
+        original_show_drives = bool(
+            self.w.config.get("show_drives_bar", True))
+        original_drive_style = self.w.config.get(
+            "drive_button_style", "amiga")
+        chk_drives = QCheckBox("Show drive buttons in each lister")
+        chk_drives.setChecked(original_show_drives)
+        chk_drives.setToolTip(
+            "When on, each lister gets a row of buttons - one "
+            "per drive / mountpoint - above the path edit. "
+            "Click a button to jump to that root.")
+        gb_drives_lay.addWidget(chk_drives)
+
+        style_row = QHBoxLayout()
+        style_row.addWidget(QLabel("Icon style:"))
+        from PyQt6.QtWidgets import QComboBox
+        cmb_drive_style = QComboBox()
+        for key in _di.STYLES:
+            cmb_drive_style.addItem(
+                _di.STYLE_LABELS.get(key, key), key)
+        # Select the current style
+        for i in range(cmb_drive_style.count()):
+            if (cmb_drive_style.itemData(i)
+                    == original_drive_style):
+                cmb_drive_style.setCurrentIndex(i)
+                break
+        cmb_drive_style.setToolTip(
+            "Visual style for the drive buttons. The dedicated "
+            "picker (Config -> Drive button style...) has a "
+            "richer live preview if you want to see them all "
+            "compared side-by-side.")
+        style_row.addWidget(cmb_drive_style, 1)
+        gb_drives_lay.addLayout(style_row)
+
+        def _sync_drive_style_enabled():
+            cmb_drive_style.setEnabled(chk_drives.isChecked())
+        chk_drives.toggled.connect(
+            lambda _b: _sync_drive_style_enabled())
+        _sync_drive_style_enabled()
+        lay.addWidget(gb_drives)
+
         lay.addStretch(1)
 
         # --- Bottom button row --------------------------------
@@ -4184,6 +4274,12 @@ class ActionDispatcher:
                 self.w.config["app_font_family"] =                     cmb_family.currentFont().family()
             self.w.config["app_font_scale_percent"] =                 spin_scale.value()
             self.w.config["app_font_pointsize_override"] =                 spin_override.value()
+            # Drive bar visibility + icon style (added 2026-05-29)
+            self.w.config["show_drives_bar"] = bool(
+                chk_drives.isChecked())
+            new_style = cmb_drive_style.currentData()
+            if new_style:
+                self.w.config["drive_button_style"] = new_style
 
         def _do_apply():
             _collect()
@@ -4193,6 +4289,32 @@ class ActionDispatcher:
             # And re-render every styled widget so the new
             # scaled_font_px() values get re-computed
             refresh_all_widgets_font()
+            # Re-render both drive bars (style change) and apply
+            # visibility (checkbox change). Cheap, no flash since
+            # the bar sits above the file list.
+            for lst in (self.w.left_lister, self.w.right_lister):
+                # Keep the lister's direct config reference in
+                # sync so the next render reads the new style.
+                try:
+                    lst._mw_config = self.w.config
+                except Exception:
+                    pass
+                try:
+                    lst.refresh_drives_bar()
+                except Exception as e:
+                    print(f"[cfg] refresh_drives_bar: {e}")
+                try:
+                    lst._apply_top_bars_visibility()
+                except Exception as e:
+                    print(f"[cfg] visibility: {e}")
+            # Apply persists. The classical "Apply = preview,
+            # OK = save" split breaks when the user closes the
+            # dialog with the X (or system close) after Apply -
+            # the change is live in this session but lost at
+            # next start. Treating Apply as "live + persist"
+            # avoids that whole class of confusion. Cancel still
+            # rolls back to the dialog-open state.
+            save_config(self.w.config)
 
         def _do_ok():
             _do_apply()
@@ -4211,8 +4333,19 @@ class ActionDispatcher:
             self.w.config["app_font_family"] = original_family
             self.w.config["app_font_scale_percent"] = original_scale
             self.w.config["app_font_pointsize_override"] =                 original_override
+            # Drive bar settings: only revert if the user changed
+            # them mid-dialog (via Apply), otherwise the config
+            # already holds the originals.
+            self.w.config["show_drives_bar"] = original_show_drives
+            self.w.config["drive_button_style"] = original_drive_style
             QApplication.instance().setFont(original_font)
             refresh_all_widgets_font()
+            for lst in (self.w.left_lister, self.w.right_lister):
+                try:
+                    lst.refresh_drives_bar()
+                    lst._apply_top_bars_visibility()
+                except Exception:
+                    pass
             dlg.reject()
 
         btn_apply.clicked.connect(_do_apply)

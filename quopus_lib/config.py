@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-05-29 18:55
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -107,12 +107,137 @@ def _safe_exists(p):
         return False
 
 
+def _win_drive_kind(path: str) -> str:
+    """Classify a Windows drive via GetDriveTypeW. Returns one of
+    home / fixed / removable / remote / cdrom / ramdisk / unknown.
+    Used so per-type drive-button styles colour each button by its
+    real type instead of all looking identical."""
+    try:
+        import ctypes
+        # 2 REMOVABLE, 3 FIXED, 4 REMOTE, 5 CDROM, 6 RAMDISK
+        t = ctypes.windll.kernel32.GetDriveTypeW(
+            ctypes.c_wchar_p(path))
+        return {
+            2: "removable", 3: "fixed", 4: "remote",
+            5: "cdrom",      6: "ramdisk",
+        }.get(t, "fixed")
+    except Exception:
+        return "fixed"
+
+
+def _read_linux_mounts():
+    """Parse /proc/mounts and return a list of useful mountpoints.
+    We skip the chaff (pseudo filesystems, snap loops, cgroup,
+    docker overlay, ...) and keep block devices + bind mounts +
+    network mounts + removable media. Each entry is
+    ``{"label": "...", "path": "...", "kind": "..."}`` where kind
+    is one of:
+
+      "root"       - the root filesystem /
+      "fixed"      - other on-disk filesystems
+      "removable"  - /media/* or /run/media/* (auto-mounted USB)
+      "remote"     - nfs / cifs / sshfs / fuse network mounts
+      "system"     - /boot, /efi, /var, etc. (still useful but
+                     less commonly opened)
+
+    The label is derived from the mountpoint - e.g. ``/mnt/data``
+    -> "data", ``/`` -> "ROOT", ``/home/me`` -> stays "HOME" as
+    set by the HOME entry. On parse failure (non-Linux, no
+    /proc/mounts) returns an empty list.
+    """
+    out = []
+    # File systems we always discard - kernel/pseudo
+    SKIP_TYPES = {
+        "proc", "sysfs", "devpts", "devtmpfs", "tmpfs", "ramfs",
+        "cgroup", "cgroup2", "pstore", "bpf", "securityfs",
+        "debugfs", "tracefs", "configfs", "fusectl", "binfmt_misc",
+        "hugetlbfs", "mqueue", "autofs", "rpc_pipefs", "nsfs",
+        "selinuxfs", "efivarfs",
+    }
+    SKIP_MOUNT_PREFIX = (
+        "/proc", "/sys", "/dev", "/run/user", "/run/lock",
+        "/run/snapd", "/snap", "/var/lib/docker",
+        "/var/lib/containers", "/var/snap",
+    )
+    NET_TYPES = {
+        "nfs", "nfs4", "cifs", "smbfs", "sshfs", "afpfs",
+        "fuse.sshfs", "fuse.rclone", "webdav",
+    }
+    try:
+        with open("/proc/mounts", "r", encoding="utf-8",
+                   errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        return out
+    seen = set()
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        dev, mp, fstype = parts[0], parts[1], parts[2]
+        # Unescape octal sequences in mountpoint (kernel writes
+        # spaces as \040, tab as \011, etc.)
+        try:
+            mp = bytes(mp, "utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+        if fstype in SKIP_TYPES:
+            continue
+        if any(mp == p or mp.startswith(p + "/")
+                for p in SKIP_MOUNT_PREFIX):
+            continue
+        if mp in seen:
+            continue
+        seen.add(mp)
+        # Classify
+        if mp == "/":
+            kind = "root"
+        elif fstype in NET_TYPES or fstype.startswith("fuse."):
+            kind = "remote"
+        elif (mp.startswith("/media/")
+                or mp.startswith("/run/media/")):
+            kind = "removable"
+        elif mp.startswith("/boot") or mp.startswith("/efi"):
+            kind = "system"
+        else:
+            kind = "fixed"
+        # Derive a short label from the leaf directory name
+        if mp == "/":
+            label = "/"
+        else:
+            label = mp.rstrip("/").rsplit("/", 1)[-1] or "?"
+        out.append({"label": label, "path": mp, "kind": kind})
+    return out
+
+
+def _read_macos_mounts():
+    """List /Volumes/* on macOS - one entry per visible volume.
+    The startup disk shows up there too as a symlink to /."""
+    out = []
+    try:
+        from os import listdir
+        for name in sorted(listdir("/Volumes")):
+            p = "/Volumes/" + name
+            if not Path(p).is_dir():
+                continue
+            out.append({"label": name, "path": p,
+                         "kind": "removable"})
+    except OSError:
+        pass
+    return out
+
+
 def _system_default_drives():
     """Build a sensible list of drive buttons for the current OS.
 
-    Linux/macOS: $HOME, /, /tmp, /mnt (if exists), /media (if exists).
-    Windows: C:/, D:/, E:/ etc. (only the ones that actually exist).
-    Falls back to the legacy Amiga-style labels for any unknown system.
+    Linux: HOME, /, then all real mounted filesystems from
+        /proc/mounts (skipping kernel pseudo-fs and snap loops).
+        Removable media under /media or /run/media is included,
+        as are network mounts (nfs/cifs/sshfs/fuse).
+    macOS: HOME, /, /Volumes/* (each volume as its own entry).
+    Windows: HOME, then C:/, D:/, ... (only the ones that exist),
+        plus a TEMP shortcut.
+    Falls back to a minimal HOME-only list for anything else.
     """
     home = str(Path.home())
     sys_name = platform.system()
@@ -120,29 +245,47 @@ def _system_default_drives():
         # Probe drive letters; only include drives that exist.
         # Empty CD/floppy drives raise OSError instead of returning
         # False - _safe_exists catches that.
-        drives = [{"label": "HOME", "path": home}]
+        drives = [{"label": "HOME", "path": home, "kind": "home"}]
         for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
             p = f"{letter}:/"
             if _safe_exists(p):
-                drives.append({"label": f"{letter}:", "path": p})
+                # Ask the OS for the real drive type so per-type
+                # styles (tile/pill/mixed/folder) colour each
+                # button correctly. Falls back to "fixed" if the
+                # API call fails.
+                drives.append({"label": f"{letter}:", "path": p,
+                                 "kind": _win_drive_kind(p)})
         # Extras for typical Windows users
-        drives.append({"label": "TEMP", "path": str(Path(home) / "AppData" / "Local" / "Temp")})
+        drives.append({"label": "TEMP",
+                         "path": str(Path(home) / "AppData"
+                                     / "Local" / "Temp"),
+                         "kind": "fixed"})
         return drives
-    # Linux / macOS / other Unix
+
+    # Linux / macOS / other Unix - always start with HOME and /
     drives = [
-        {"label": "HOME", "path": home},
-        {"label": "ROOT", "path": "/"},
-        {"label": "TMP",  "path": "/tmp"},
+        {"label": "HOME", "path": home,   "kind": "home"},
+        {"label": "/",    "path": "/",    "kind": "root"},
     ]
-    for extra in ("/mnt", "/media", "/opt", "/var", "/etc"):
-        if _safe_exists(extra):
-            drives.append({"label": extra.lstrip("/").upper() or "?",
-                           "path": extra})
-    if sys_name == "Darwin":
-        for vol in ("/Volumes", "/Users"):
-            if _safe_exists(vol):
-                drives.append({"label": vol.lstrip("/").upper(),
-                                "path": vol})
+    seen_paths = {home, "/"}
+
+    # Pull real mounts from the kernel
+    if sys_name == "Linux":
+        mounts = _read_linux_mounts()
+    elif sys_name == "Darwin":
+        mounts = _read_macos_mounts()
+    else:
+        mounts = []
+    for m in mounts:
+        if m["path"] in seen_paths:
+            continue
+        seen_paths.add(m["path"])
+        drives.append(m)
+
+    # /tmp is always nice to have at the end
+    if _safe_exists("/tmp") and "/tmp" not in seen_paths:
+        drives.append({"label": "tmp", "path": "/tmp",
+                         "kind": "fixed"})
     return drives
 
 
@@ -352,6 +495,27 @@ DEFAULT_CONFIG = {
     #   "bytes"  - human readable (4K, 1.2M, ...)  default
     #   "blocks" - C64 disk blocks (256B = 1 block, CBM DOS)
     "size_display": "bytes",
+    # Lister drives bar (Total Commander style): one button per
+    # mounted drive / mountpoint above the path edit. Default on
+    # so the feature is discoverable; the user can hide it via
+    # right-click → View → Drive buttons bar if they want a more
+    # compact lister.
+    "show_drives_bar": True,
+    # Visual style for the drive buttons. One of:
+    #   "amiga"  - Workbench drawer (default, matches Quopus theme)
+    #   "floppy" - 3.5" diskette
+    #   "hdd"    - hard-disk-drive icon
+    #   "pill"   - color pill with mini glyph
+    #   "led"    - round LED badge
+    #   "mixed"  - per-drive type icon (house/HDD/globe/USB/CD)
+    #   "plain"  - no icon, label text only (original Quopus look)
+    # Configurable via Config → Drive button style...
+    "drive_button_style": "amiga",
+    # Lister splitter sizes (left, mid button column, right).
+    # Empty / unset = 50/50 split, the QSplitter computes from
+    # the window width. Persisted whenever the user drags the
+    # divider.
+    "lister_splitter_sizes": [],
     # U64 Streamer settings - persisted across sessions so the user
     # doesn't have to re-type the host/ports every launch.
     "u64_host":       "",

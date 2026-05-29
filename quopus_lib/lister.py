@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 12:38
+# date_time: 2026-05-29 18:40
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -402,7 +402,25 @@ class FileLister(QWidget):
         self.btn_disconnect.hide()
         nav_row.addWidget(self.btn_disconnect)
         wrap_nav = QWidget(); wrap_nav.setLayout(nav_row)
+
+        # --- Drives bar (optional, like Total Commander) -------
+        # One clickable button per available drive / mountpoint.
+        # Built once at lister creation; visibility is toggled
+        # globally via show_drives_bar in quopus.cfg, accessible
+        # from the Show menu in the menu bar.
+        self._drives_bar = self._build_drives_bar()
+
+        # Stack: drives -> nav. The action toolbar that used to
+        # live here was replaced by a proper application menu bar
+        # in main_window.py (Files / Mark / Commands / Show /
+        # Configuration / Help) - same convention as Double and
+        # Total Commander.
+        outer.addWidget(self._drives_bar)
         outer.addWidget(wrap_nav)
+
+        # Apply visibility from config now (default off so the
+        # existing UI looks unchanged for current users).
+        self._apply_top_bars_visibility()
 
         # Tree view - multi-column table with resizable headers
         from PyQt6.QtWidgets import QHeaderView
@@ -733,6 +751,320 @@ class FileLister(QWidget):
     def focus_list(self):
         self.view.setFocus(Qt.FocusReason.TabFocusReason)
         self.got_focus.emit(self)
+
+    # ---------------------------------------------------------------
+    # Optional top bars: drives + actions (Total Commander style)
+    # ---------------------------------------------------------------
+
+    def _build_drives_bar(self):
+        """Build the drive-buttons row that sits above the path
+        edit. One button per available local drive / mountpoint;
+        click jumps the lister to that root.
+
+        The buttons live inside a horizontally-scrollable area so
+        the bar still works when the user has 20+ drives mounted
+        (a frequent reality for sysops and Windows users with
+        mapped network shares) - rather than truncating buttons
+        at the right edge of the lister, the user can scroll the
+        bar sideways. The wheel scrolls horizontally over the bar,
+        and a thin scroll bar appears under it. Built once and
+        cached - drive contents are static for a session.
+        """
+        from PyQt6.QtWidgets import (
+            QWidget, QHBoxLayout, QToolButton, QScrollArea,
+        )
+        # Container with the actual buttons.
+        inner = QWidget()
+        inner_layout = QHBoxLayout(inner)
+        inner_layout.setContentsMargins(2, 1, 2, 1)
+        inner_layout.setSpacing(1)
+        inner.setStyleSheet(
+            f"QWidget {{ background-color: {C.WB_GREY}; }}")
+        try:
+            from .config import _system_default_drives
+            drives = _system_default_drives()
+        except Exception:
+            drives = []
+        for d in drives:
+            label = d.get("label", "?")
+            path = d.get("path", "")
+            if not path:
+                continue
+            b = QToolButton()
+            # Pick icon style + drive type. Icons are rendered
+            # via drive_icons.render_drive_icon(); plain style
+            # returns None and we fall back to text-only button.
+            try:
+                from . import drive_icons
+                from PyQt6.QtGui import QIcon
+                from PyQt6.QtCore import QSize
+                style = "amiga"
+                try:
+                    # Prefer the direct config reference the main
+                    # window plants on us after we're created -
+                    # at __init__ time the widget hierarchy isn't
+                    # fully wired yet and self.window() doesn't
+                    # resolve to the main window.
+                    mw_cfg = getattr(self, "_mw_config", None)
+                    if mw_cfg is None:
+                        mw_cfg = (getattr(self.window(),
+                                          "config", {}) or {})
+                    if mw_cfg:
+                        style = mw_cfg.get("drive_button_style",
+                                            "amiga")
+                except Exception:
+                    pass
+                dt = (d.get("kind")
+                      or drive_icons.detect_drive_type(label, path))
+                pm = drive_icons.render_drive_icon(
+                    style, label, dt, size=20)
+                if pm is not None:
+                    b.setIcon(QIcon(pm))
+                    b.setIconSize(QSize(pm.width(), pm.height()))
+                    # If the label is short enough to fit IN the
+                    # icon (single Windows drive letter "C:" or
+                    # a 1-char tag), use icon-only - the letter
+                    # is already painted inside the icon by the
+                    # renderer. For longer Linux labels like
+                    # "HOME", "outputs", "public" we don't try to
+                    # squeeze them inside the small icon; instead
+                    # we show the icon plus the label text next
+                    # to it so the user can still read where the
+                    # button points.
+                    short = (len(label) <= 2 and label[:1].isalpha())
+                    if short:
+                        b.setToolButtonStyle(
+                            Qt.ToolButtonStyle.ToolButtonIconOnly)
+                        b.setText("")
+                    else:
+                        b.setText(label)
+                        b.setToolButtonStyle(
+                            Qt.ToolButtonStyle
+                            .ToolButtonTextBesideIcon)
+                else:
+                    # plain style: text label, no icon
+                    b.setText(label)
+                    b.setToolButtonStyle(
+                        Qt.ToolButtonStyle.ToolButtonTextOnly)
+            except Exception:
+                # Fallback to the original text-only look on any
+                # render failure - we don't want a glitchy icon
+                # path to take down the lister.
+                b.setText(label)
+            b.setToolTip(f"{label}  {path}")
+            b.setStyleSheet(
+                f"QToolButton {{ background-color: {C.WB_GREY}; "
+                f"color: {C.BLACK}; "
+                f"border: 1px outset {C.BLACK}; "
+                f"padding: 1px 3px; min-width: 18px; "
+                f"font-family: 'Topaz','Courier New',monospace; "
+                f"font-size: {scaled_font_px(11)}px; }} "
+                f"QToolButton:hover {{ "
+                f"background-color: {C.SELECTED}; "
+                f"color: {C.WHITE}; }}")
+            b.clicked.connect(
+                lambda _checked=False, p=path: self._jump_to(p))
+            inner_layout.addWidget(b)
+        inner_layout.addStretch(1)
+
+        # Wrap in a QScrollArea for horizontal scrolling. The
+        # vertical scrollbar is off, the horizontal one only
+        # appears when the contents don't fit.
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Match the lister's grey background so the scroll area
+        # blends in, and keep the bar height tight: a button is
+        # roughly 20px, plus a 6-8px scroll bar = ~30px max.
+        scroll.setStyleSheet(
+            f"QScrollArea {{ background-color: {C.WB_GREY}; "
+            f"border: 0; }} "
+            f"QScrollBar:horizontal {{ height: 8px; "
+            f"background-color: {C.WB_GREY}; }} "
+            f"QScrollBar::handle:horizontal {{ "
+            f"background-color: {C.BLACK}; min-width: 20px; }} "
+            f"QScrollBar::add-line:horizontal,"
+            f"QScrollBar::sub-line:horizontal {{ width: 0; }}")
+        # Bar height: a 20px icon plus button border (2px each
+        # side) plus internal padding rounds to ~28px; add ~8px
+        # for the horizontal scroll bar underneath = 36px. Was
+        # 30px before, which clipped the bottom of the letter
+        # area on the floppy / HDD styles.
+        scroll.setMaximumHeight(36)
+        # Vertical mouse wheel maps to horizontal scrolling here -
+        # users naturally scroll-wheel over a horizontal bar; the
+        # default would do nothing since vertical scroll is off.
+        scroll.wheelEvent = self._drives_bar_wheel_event(scroll)
+        return scroll
+
+    def _drives_bar_wheel_event(self, scroll):
+        """Return a wheelEvent handler that translates vertical
+        wheel deltas to horizontal scrolling on the drives bar.
+        We close over the scroll area so the handler can reach
+        its horizontalScrollBar()."""
+        def handler(ev):
+            try:
+                # 120 units per wheel notch -> scroll 60 px so
+                # roughly 2 buttons per notch
+                delta = ev.angleDelta().y()
+                step = -int(delta * 0.5)
+                hbar = scroll.horizontalScrollBar()
+                hbar.setValue(hbar.value() + step)
+                ev.accept()
+            except Exception:
+                pass
+        return handler
+
+    def _jump_to(self, path):
+        """Drive button click: navigate to `path` in whichever
+        lister is currently ACTIVE (the one with the
+        red/highlighted title bar), not necessarily the lister
+        whose drive bar was clicked. This matches how the user
+        thinks: 'I want to go to D: in the panel I'm working in',
+        regardless of which side's drive button they happened to
+        reach for. Falls back to this lister if there's no active
+        one for any reason (e.g. main window not reachable).
+        """
+        try:
+            p = Path(path).expanduser()
+            if not p.is_dir():
+                return
+            # Find the active lister via the main window
+            target = self
+            try:
+                mw = self.window()
+                if hasattr(mw, "_active_lister"):
+                    active, _other = mw._active_lister()
+                    if active is not None:
+                        target = active
+            except Exception:
+                target = self
+            # Use the existing goto() helper - it handles the
+            # full navigation pipeline (fs.cd for the underlying
+            # filesystem wrapper, history push, refresh, signal
+            # emit). Setting current_path alone only updates the
+            # title bar; goto() actually re-reads the directory.
+            target.goto(str(p))
+            # Make sure the active lister gets the focus ring so
+            # the user sees where they landed.
+            try:
+                target.focus_list()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _build_actions_bar(self):
+        """Deprecated. The action bar that used to sit at the top
+        of the lister has been replaced by a global QMenuBar on
+        the main window (Files / Mark / Commands / Show /
+        Configuration / Help) - same convention as Double and
+        Total Commander. This stub is kept so any old config /
+        plugin that referenced it still loads."""
+        from PyQt6.QtWidgets import QWidget
+        w = QWidget()
+        w.setVisible(False)
+        return w
+
+    def _dispatch_main(self, action_key):
+        """Forward an action click to the main window's dispatcher
+        AFTER making this lister the active one - so e.g. clicking
+        F5 Copy on the left lister copies from left -> right, even
+        if focus was elsewhere."""
+        try:
+            self.focus_list()
+            self.window().actions.dispatch(action_key)
+        except Exception:
+            pass
+
+    def _apply_top_bars_visibility(self):
+        """Show/hide the drives + actions bars based on config.
+        Both default to OFF so the existing UI doesn't change for
+        users who don't enable them."""
+        cfg = {}
+        try:
+            # Same precedence as _build_drives_bar: direct ref
+            # planted by the main window first, widget-hierarchy
+            # walk second.
+            cfg = getattr(self, "_mw_config", None)
+            if cfg is None:
+                cfg = getattr(self.window(), "config", {}) or {}
+        except Exception:
+            cfg = {}
+        # Default ON so a fresh install discovers the drive
+        # buttons immediately. Existing configs that already
+        # have a value persisted will use that value; the
+        # change of default only affects fresh configs.
+        show_drives = bool(cfg.get("show_drives_bar", True))
+        show_actions = bool(cfg.get("show_actions_bar", False))
+        if hasattr(self, "_drives_bar"):
+            self._drives_bar.setVisible(show_drives)
+        if hasattr(self, "_actions_bar"):
+            self._actions_bar.setVisible(show_actions)
+
+    def _toggle_drives_bar(self):
+        """Right-click toggle for the drives bar. Persists in the
+        main config so both listers update next launch."""
+        try:
+            mw = self.window()
+            mw.config["show_drives_bar"] = not bool(
+                mw.config.get("show_drives_bar", True))
+            from .config import save_config
+            save_config(mw.config)
+            mw.left_lister._apply_top_bars_visibility()
+            mw.right_lister._apply_top_bars_visibility()
+        except Exception:
+            pass
+
+    def refresh_drives_bar(self):
+        """Rebuild the drives bar from scratch - used after the
+        user changes the icon style in Settings. We swap the old
+        QScrollArea widget out of the outer layout and put a
+        freshly-built one in the same position so the visibility
+        toggle and surrounding layout stay intact."""
+        try:
+            old = getattr(self, "_drives_bar", None)
+            if old is None:
+                return
+            parent_layout = self.layout()
+            if parent_layout is None:
+                return
+            # Find where the old bar sits and replace it
+            idx = -1
+            for i in range(parent_layout.count()):
+                it = parent_layout.itemAt(i)
+                if it is not None and it.widget() is old:
+                    idx = i
+                    break
+            new_bar = self._build_drives_bar()
+            self._drives_bar = new_bar
+            if idx >= 0:
+                parent_layout.insertWidget(idx, new_bar)
+                parent_layout.removeWidget(old)
+                old.deleteLater()
+            # Reapply visibility from config (the new widget
+            # starts visible by default; honour the toggle).
+            self._apply_top_bars_visibility()
+        except Exception as e:
+            print(f"[lister] refresh_drives_bar failed: {e}")
+
+    def _toggle_actions_bar(self):
+        """Right-click toggle for the actions bar."""
+        try:
+            mw = self.window()
+            mw.config["show_actions_bar"] = not bool(
+                mw.config.get("show_actions_bar", False))
+            from .config import save_config
+            save_config(mw.config)
+            mw.left_lister._apply_top_bars_visibility()
+            mw.right_lister._apply_top_bars_visibility()
+        except Exception:
+            pass
 
     def _on_path_entered(self):
         np = self.path_edit.text().strip()
@@ -2205,7 +2537,7 @@ class FileLister(QWidget):
                else "  (currently ascending)"))
         a_rev.triggered.connect(self._toggle_sort_reverse)
 
-        # ----- View ► submenu (size column display) -----
+        # ----- View ► submenu (size column display + bars) -----
         view_menu = menu.addMenu("View ►")
         view_menu.setStyleSheet(menu.styleSheet())
         cur_size = "blocks" if self.model.show_blocks else "bytes"
@@ -2217,6 +2549,19 @@ class FileLister(QWidget):
             ("✓ " if cur_size == "blocks" else "    ")
             + "Size: C64 blocks (256 B = 1 bl)",
             lambda: self._set_size_display("blocks"))
+        # Drive buttons bar - Total Commander style row of drive
+        # shortcuts above the path edit. Default on (set in
+        # DEFAULT_CONFIG); toggle persists to show_drives_bar.
+        view_menu.addSeparator()
+        try:
+            cfg_db = getattr(self.window(), "config", {}) or {}
+        except Exception:
+            cfg_db = {}
+        cur_drives = bool(cfg_db.get("show_drives_bar", True))
+        view_menu.addAction(
+            ("✓ " if cur_drives else "    ")
+            + "Drive buttons bar (above path)",
+            self._toggle_drives_bar)
         menu.addSeparator()
 
         # ----- Shuffle play ► submenu -----

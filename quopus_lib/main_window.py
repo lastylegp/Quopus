@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-05-29 18:40
 """
 Main window layout:
 
@@ -26,7 +26,8 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QPushButton, QFrame, QInputDialog, QSizePolicy
+    QLabel, QPushButton, QFrame, QInputDialog, QSizePolicy,
+    QSplitter,
 )
 
 from .palette import (
@@ -242,21 +243,39 @@ class QuopusMain(QMainWindow):
         QApplication.instance().installEventFilter(self)
 
     def _build_ui(self):
+        # Menu bar built directly from action_catalog.ACTION_GROUPS,
+        # so it stays in sync with whatever's in the action picker
+        # (right-click any button). Top-level menus = group names
+        # (Viewers, File operations, Navigation, ..., System +
+        # Custom Modules if any are loaded). Each entry under a
+        # menu dispatches the same action key the picker would.
+        self._build_menu_bar()
+
         central = QWidget()
         self.setCentralWidget(central)
         main = QVBoxLayout(central)
         main.setContentsMargins(0, 0, 0, 0); main.setSpacing(0)
 
-        screen_title = QLabel(" QUOPUS.1 ")
-        screen_title.setStyleSheet(SCREEN_TITLEBAR_QSS)
-        screen_title.setFixedHeight(20)
-        main.addWidget(screen_title)
+        # The old "QUOPUS.1" header that used to sit here was
+        # redundant once the menu bar landed above (and each
+        # lister already has its own QUOPUS.x: <path> title bar).
+        # Removing it gives the listers more vertical room.
 
         # Listers row
         body = QWidget()
         body_layout = QHBoxLayout(body)
         body_layout.setContentsMargins(2, 2, 2, 2)
         body_layout.setSpacing(2)
+
+        # The two listers live inside a QSplitter so the user can
+        # drag the divider to resize them - same convention as
+        # Double / Total Commander. The middle mini-button column
+        # (B/R/S/A) sits between them as a fixed third pane so it
+        # follows the divider naturally.
+        self._lister_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._lister_splitter.setHandleWidth(4)
+        self._lister_splitter.setChildrenCollapsible(False)
+        body_layout.addWidget(self._lister_splitter, 1)
 
         self.left_lister = FileLister(self.config["left_path"], "QUOPUS.1")
         # Lister can't reach the main window's config inside its own
@@ -273,7 +292,7 @@ class QuopusMain(QMainWindow):
         self.left_lister.add_drive_requested.connect(self._on_add_drive_request)
         self.left_lister.add_ftp_bookmark_requested.connect(
             self._on_add_ftp_bookmark_request)
-        body_layout.addWidget(self.left_lister, 1)
+        self._lister_splitter.addWidget(self.left_lister)
 
         mid = QVBoxLayout()
         mid.setSpacing(1)
@@ -291,7 +310,8 @@ class QuopusMain(QMainWindow):
             mid.addWidget(b)
         mid.addStretch()
         mid_wrap = QWidget(); mid_wrap.setLayout(mid)
-        body_layout.addWidget(mid_wrap)
+        mid_wrap.setFixedWidth(28)
+        self._lister_splitter.addWidget(mid_wrap)
 
         self.right_lister = FileLister(self.config["right_path"], "QUOPUS.2")
         # Apply size_display setting (see comment above for left_lister)
@@ -304,13 +324,47 @@ class QuopusMain(QMainWindow):
         self.right_lister.add_drive_requested.connect(self._on_add_drive_request)
         self.right_lister.add_ftp_bookmark_requested.connect(
             self._on_add_ftp_bookmark_request)
-        body_layout.addWidget(self.right_lister, 1)
+        self._lister_splitter.addWidget(self.right_lister)
+
+        # The middle button column should never grow when the user
+        # drags the splitter - it's just a hairline of buttons.
+        self._lister_splitter.setStretchFactor(0, 1)   # left lister
+        self._lister_splitter.setStretchFactor(1, 0)   # mid column
+        self._lister_splitter.setStretchFactor(2, 1)   # right lister
+
+        # Restore saved divider position. We store (left, mid,
+        # right) widths so it survives a restart. Default is 50/50.
+        saved_sizes = self.config.get("lister_splitter_sizes")
+        if (isinstance(saved_sizes, (list, tuple))
+                and len(saved_sizes) == 3
+                and all(isinstance(x, int) and x >= 0
+                        for x in saved_sizes)):
+            self._lister_splitter.setSizes(list(saved_sizes))
+        self._lister_splitter.splitterMoved.connect(
+            self._on_splitter_moved)
 
         # Apply saved column widths to both listers
         widths = self.config.get("column_widths", {})
         if widths:
             self.left_lister.apply_column_widths(widths)
             self.right_lister.apply_column_widths(widths)
+
+        # Hand each lister a direct reference to the main window's
+        # config dict. This bypasses the self.window() climb that
+        # used to fail at this point in startup (the body widget
+        # hasn't been added to `main` yet, so the lister's window
+        # ancestor doesn't yet resolve to QuopusMainWindow).
+        # _build_drives_bar() looks for `_mw_config` first.
+        self.left_lister._mw_config = self.config
+        self.right_lister._mw_config = self.config
+
+        # Rebuild both drive bars now that they can see the real
+        # config - they used the "amiga" fallback during __init__.
+        for lst in (self.left_lister, self.right_lister):
+            try:
+                lst.refresh_drives_bar()
+            except Exception as e:
+                print(f"[main] initial drives bar refresh: {e}")
 
         # Apply saved sort state per side (key + reverse). Read the
         # new QUOPUS.* keys first, fall back to legacy DOPUS.* keys
@@ -1696,6 +1750,86 @@ class QuopusMain(QMainWindow):
     def _save_path(self, key, path):
         self.config[key] = path
         save_config(self.config)
+
+    def _build_menu_bar(self):
+        """Build the application menu bar from the central
+        action_catalog.ACTION_GROUPS list. Top-level menus are the
+        group names (Viewers, File operations, Navigation, ...).
+        Each menu entry is one action; clicking it dispatches the
+        same action key the right-click picker / button-bar uses,
+        so all three UIs stay consistent automatically.
+        """
+        from .action_catalog import get_action_groups
+        from PyQt6.QtGui import QAction
+
+        # Bare QMainWindow.menuBar() makes one on demand.
+        mb = self.menuBar()
+        mb.clear()
+
+        # Style the menu bar so it matches Quopus's existing
+        # workbench look (grey background, white selection on
+        # hover) instead of the OS-default native bar.
+        mb.setStyleSheet(f"""
+            QMenuBar {{
+                background-color: {C.WB_GREY};
+                color: {C.BLACK};
+                font-family: 'Topaz','Courier New',monospace;
+            }}
+            QMenuBar::item {{
+                background: transparent;
+                padding: 3px 8px;
+            }}
+            QMenuBar::item:selected {{
+                background-color: {C.SELECTED};
+                color: {C.WHITE};
+            }}
+            QMenu {{
+                background-color: {C.WB_GREY};
+                color: {C.BLACK};
+                border: 1px solid {C.BLACK};
+                font-family: 'Topaz','Courier New',monospace;
+            }}
+            QMenu::item {{ padding: 3px 20px; }}
+            QMenu::item:selected {{
+                background-color: {C.SELECTED};
+                color: {C.WHITE};
+            }}
+            QMenu::separator {{
+                height: 1px;
+                background: {C.BLACK};
+                margin: 3px 6px;
+            }}
+        """)
+
+        # include_custom=True appends a "Custom Modules" group
+        # built from the loaded user plugins. If no plugins are
+        # loaded that group is skipped automatically.
+        groups = get_action_groups(include_custom=True)
+        for group_name, items in groups:
+            if not items:
+                continue
+            menu = mb.addMenu(group_name)
+            for key, label in items:
+                act = QAction(label, self)
+                # Bind the action key as a closure default so
+                # each menu item dispatches its own action and
+                # not whatever the last loop iteration assigned.
+                act.triggered.connect(
+                    lambda _checked=False, k=key:
+                        self.actions.dispatch(k))
+                menu.addAction(act)
+
+    def _on_splitter_moved(self, _pos=None, _idx=None):
+        """Persist the lister splitter widths whenever the user
+        finishes dragging the divider. Stored as a 3-element list
+        (left, middle button column, right) so it round-trips
+        through JSON cleanly."""
+        try:
+            sizes = self._lister_splitter.sizes()
+            self.config["lister_splitter_sizes"] = list(sizes)
+            save_config(self.config)
+        except Exception:
+            pass
 
     def showEvent(self, event):
         """Apply restored maximize/fullscreen state once the window is
