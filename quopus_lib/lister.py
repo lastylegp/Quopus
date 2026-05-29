@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 19:10
+# date_time: 2026-05-29 19:19
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -279,7 +279,17 @@ class FileLister(QWidget):
 
     def __init__(self, initial_path, side_label="QUOPUS.1"):
         super().__init__()
-        self.current_path = Path(initial_path).expanduser().resolve()
+        # Resolve the start path defensively - a path carried over
+        # from another OS or pointing at a now-missing mount must
+        # not crash startup. Fall back to HOME if it isn't a real
+        # directory here.
+        try:
+            cand = Path(initial_path).expanduser()
+            if not cand.is_dir():
+                cand = Path.home()
+            self.current_path = cand.resolve()
+        except Exception:
+            self.current_path = Path.home().resolve()
         self.side_label = side_label
         # Filesystem backend - local by default, can be swapped to remote
         from .fs_backend import LocalFs

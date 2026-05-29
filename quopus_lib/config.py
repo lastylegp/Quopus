@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 18:55
+# date_time: 2026-05-29 19:19
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -537,6 +537,41 @@ DEFAULT_CONFIG = {
 }
 
 
+def _sanitize_start_path(p):
+    """Return a usable local directory for a saved lister path.
+
+    A config moved between operating systems can hold a path that
+    doesn't resolve here - the classic case is a Windows path like
+    'C:\\Users\\j\\Downloads' opened on Linux, where it gets
+    (wrongly) treated as relative and tacked onto the current
+    working directory. We also guard against a drive that has
+    since been unplugged. In any of those cases we fall back to
+    the user's home directory so the lister always opens on
+    something valid.
+    """
+    home = str(Path.home())
+    if not p or not isinstance(p, str):
+        return home
+    # A Windows-style absolute path (drive letter + backslash, or
+    # a UNC \\server\share) is never valid on POSIX. Detect it
+    # cheaply so we don't even try to resolve it.
+    if os.name != "nt":
+        looks_windows = (
+            (len(p) >= 2 and p[1] == ":" and p[0].isalpha())
+            or p.startswith("\\\\")
+            or "\\" in p
+        )
+        if looks_windows:
+            return home
+    try:
+        cand = Path(p).expanduser()
+        if cand.is_dir():
+            return str(cand.resolve())
+    except Exception:
+        pass
+    return home
+
+
 def load_config():
     # Migrate any legacy quopus.cfg to quopus.cfg first, so the rest
     # of the function reads from whatever is now at CONFIG_FILE.
@@ -564,6 +599,17 @@ def load_config():
                 cfg["buttons_shift_alt"] = DEFAULT_BUTTONS_SHIFT_ALT
             for k, v in DEFAULT_CONFIG.items():
                 cfg.setdefault(k, v)
+            # Validate the saved lister paths. A config carried
+            # over from another OS (e.g. a Windows "C:\Users\j\
+            # Downloads" opened on Linux) holds a path that can't
+            # be resolved here - left as-is it makes the lister
+            # try to open a bogus directory at startup and throw.
+            # Fall back to HOME for any path that doesn't exist as
+            # a real directory on this machine.
+            cfg["left_path"] = _sanitize_start_path(
+                cfg.get("left_path"))
+            cfg["right_path"] = _sanitize_start_path(
+                cfg.get("right_path"))
             # Seed default file associations for missing extensions
             from .file_assoc import ensure_default_assoc
             ensure_default_assoc(cfg)
