@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 19:19
+# date_time: 2026-05-29 20:18
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -677,7 +677,129 @@ def apply_app_font(cfg, app=None):
         font = app.font()
         font.setPointSize(base_pt)
     app.setFont(font)
+    # Give dialogs a sane minimum so they aren't clipped. On
+    # Linux/X11 a QMessageBox with a custom (often wider)
+    # monospace font and a multi-line text sometimes lays itself
+    # out too narrow/short - the window manager decorates the
+    # frame at the size QMessageBox first asked for, before the
+    # label has wrapped, and the bottom line + title get cut off.
+    # Forcing a minimum width on the message label makes the box
+    # size itself around readable text. We scale the minimum with
+    # the font so big-font users get a proportionally wider box.
+    apply_dialog_metrics(app, base_pt)
     return True
+
+
+def apply_dialog_metrics(app=None, base_pt=10):
+    """Make message boxes and dialogs size themselves correctly.
+
+    Some Linux window managers clip QMessageBox content - either
+    the bottom text line ends up hidden behind the buttons, or
+    the frame is decorated too small. The fix is a global event
+    filter that, when a dialog is shown, sets a sensible minimum
+    width on its TEXT labels (as widget properties, not via
+    stylesheet - stylesheet min-width interferes with the
+    word-wrap heightForWidth calculation) and then calls
+    adjustSize() so Qt recomputes the height for that width and
+    the dialog grows to fit. We also pin the resulting minimum
+    size so the WM can't shrink it back.
+
+    base_pt drives the minimum width so big-font users get a
+    proportionally wider (and therefore shorter) dialog.
+    """
+    try:
+        from PyQt6.QtWidgets import QApplication
+    except ImportError:
+        return
+    if app is None:
+        app = QApplication.instance()
+    if app is None:
+        return
+    # Stash the per-font label minimum width on the app so the
+    # event filter can read the current value (it re-runs when
+    # the user changes the font scale).
+    min_label = max(300, min(620, int(base_pt * 36)))
+    app._quopus_dialog_min_label = min_label
+    _install_dialog_sizer(app)
+
+
+# A module-level singleton so we install the filter exactly once.
+_DIALOG_SIZER = None
+
+
+def _install_dialog_sizer(app):
+    """Install (once) a global event filter that forces message
+    boxes and dialogs to size around their content when shown."""
+    global _DIALOG_SIZER
+    if _DIALOG_SIZER is not None:
+        return
+    try:
+        from PyQt6.QtCore import QObject, QEvent, QTimer
+        from PyQt6.QtWidgets import (
+            QApplication, QMessageBox, QInputDialog, QLabel)
+    except ImportError:
+        return
+
+    class _DialogSizer(QObject):
+        def eventFilter(self, obj, ev):
+            try:
+                if ev.type() in (QEvent.Type.Show,
+                                  QEvent.Type.Polish):
+                    if isinstance(obj, (QMessageBox, QInputDialog)):
+                        # Fix now and again on the next loop turn -
+                        # the first pass catches the initial layout,
+                        # the deferred pass catches any WM resize
+                        # that happens right after show.
+                        self._fix(obj)
+                        QTimer.singleShot(
+                            0, lambda o=obj: self._fix(o))
+                        QTimer.singleShot(
+                            30, lambda o=obj: self._fix(o))
+            except Exception:
+                pass
+            return False
+
+        def _fix(self, dlg):
+            try:
+                if dlg is None or not dlg.isVisible():
+                    return
+                min_label = getattr(
+                    dlg, "_quopus_min_label_applied", None)
+                if min_label is None:
+                    app = QApplication.instance()
+                    min_label = getattr(
+                        app, "_quopus_dialog_min_label", 340)
+                    # Give the text labels a real minimum width
+                    # (widget property) and ensure word-wrap, so
+                    # heightForWidth is well-defined. We only do
+                    # this once per dialog to avoid fighting our
+                    # own re-runs.
+                    for lbl in dlg.findChildren(QLabel):
+                        n = lbl.objectName()
+                        if n in ("qt_msgbox_label",
+                                  "qt_msgbox_informativelabel"):
+                            lbl.setWordWrap(True)
+                            if lbl.minimumWidth() < min_label:
+                                lbl.setMinimumWidth(min_label)
+                    dlg._quopus_min_label_applied = min_label
+                # Recompute the whole layout now that the labels
+                # have their widths, then grow the dialog to the
+                # computed size. Never shrink below current.
+                lay = dlg.layout()
+                if lay is not None:
+                    lay.activate()
+                dlg.adjustSize()
+                hint = dlg.sizeHint()
+                w = max(dlg.width(), hint.width())
+                h = max(dlg.height(), hint.height())
+                if w > dlg.width() or h > dlg.height():
+                    dlg.setMinimumSize(w, h)
+                    dlg.resize(w, h)
+            except Exception:
+                pass
+
+    _DIALOG_SIZER = _DialogSizer(app)
+    app.installEventFilter(_DIALOG_SIZER)
 
 
 def current_font_scale(cfg=None):
