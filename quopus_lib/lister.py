@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 18:40
+# date_time: 2026-05-29 19:10
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -921,39 +921,22 @@ class FileLister(QWidget):
         return handler
 
     def _jump_to(self, path):
-        """Drive button click: navigate to `path` in whichever
-        lister is currently ACTIVE (the one with the
-        red/highlighted title bar), not necessarily the lister
-        whose drive bar was clicked. This matches how the user
-        thinks: 'I want to go to D: in the panel I'm working in',
-        regardless of which side's drive button they happened to
-        reach for. Falls back to this lister if there's no active
-        one for any reason (e.g. main window not reachable).
-        """
+        """Drive button click: navigate THIS lister (the one the
+        drive bar belongs to) to `path`. Clicking a button on the
+        left bar changes the left panel; the right bar changes the
+        right panel - each side is independent, the standard
+        Total/Double Commander behaviour. Uses goto() so the full
+        navigation pipeline runs (fs.cd, history, refresh, signal),
+        not just the title bar."""
         try:
             p = Path(path).expanduser()
             if not p.is_dir():
                 return
-            # Find the active lister via the main window
-            target = self
+            self.goto(str(p))
+            # Give this lister the focus ring so the user sees the
+            # panel they just changed is now active.
             try:
-                mw = self.window()
-                if hasattr(mw, "_active_lister"):
-                    active, _other = mw._active_lister()
-                    if active is not None:
-                        target = active
-            except Exception:
-                target = self
-            # Use the existing goto() helper - it handles the
-            # full navigation pipeline (fs.cd for the underlying
-            # filesystem wrapper, history push, refresh, signal
-            # emit). Setting current_path alone only updates the
-            # title bar; goto() actually re-reads the directory.
-            target.goto(str(p))
-            # Make sure the active lister gets the focus ring so
-            # the user sees where they landed.
-            try:
-                target.focus_list()
+                self.focus_list()
             except Exception:
                 pass
         except Exception:
