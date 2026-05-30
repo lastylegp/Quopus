@@ -70,7 +70,7 @@
 
 ## 📖 Documentation
 
-See the [Wiki](../../wiki) or the included `README.md` for detailed instructions.
+See the the included `README.md` for detailed instructions.
 
 ---
 
@@ -99,6 +99,5 @@ For questions or issues:
 ## 📜 License
 
 Quopus is proprietary software. A valid license key is required to use all Pro Features without Limitations.  
-See [LICENSE.txt](LICENSE.txt) for full terms.
 
 © 2026 lA-sTYLe / Quantum – All rights reserved.
