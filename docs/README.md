@@ -17,6 +17,7 @@
 |---|---|---|---|
 | **1 Year Unlimited** | **€5** | 12 months | [paypal.me/lastyletools/5EUR](https://paypal.me/lastyletools/5EUR) |
 | **Lifetime Pro Unlimited** | **€10** | unlimited | [paypal.me/lastyletools/10EUR](https://paypal.me/lastyletools/10EUR) |
+| **Custom Modules** | **on demand** | Ask for Your own Custom Module for whatever Data handling, nearly everything is possible |
 
 ### How it works
 
@@ -69,7 +70,7 @@
 
 ## 📖 Documentation
 
-See the [Wiki](../../wiki) or the included `README.txt` for detailed instructions.
+See the [Wiki](../../wiki) or the included `README.md` for detailed instructions.
 
 ---
 

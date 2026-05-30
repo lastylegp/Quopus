@@ -700,7 +700,7 @@ A dedicated workbench for C64 `.tap` cassette images — identify the loader, li
 
 **100% accurate via bundled TAPClean** — rather than approximating the dozens of commercial tape loaders, Quopus bundles the GPL **TAPClean** source (the reference C64/VIC20 tape preservation tool, based on Final TAP 2.76 by Subchrist Software, maintained by the TC Team) under `external/tapclean/`. On first use Quopus compiles the binary automatically (needs `gcc`/`cc` + `make`) and calls it for loader identification and file extraction. This gives the same results as running TAPClean by hand: all ~93 loader scanners (Ocean/Imagine, Novaload, Freeload, Turbotape 250, Visiload, Pavloda, System 3/IK, US Gold, Rack-It, Bleepload, Palace, Cyberload, and many more), correct file names, load/end addresses, checksums and CRC32s.
 
-- **Build / fallback**: the binary is built once and cached. On Windows without a compiler you can drop a prebuilt `tapclean.exe` into `external/tapclean/src/`. If TAPClean can't be built or run, Quopus falls back to a built-in pure-Python analyzer (`tap_analyzer.py`) that handles the CBM ROM loader plus the most common turbo loaders — not as complete, but no compiler required.
+- **Build / fallback**: the binary is built once and cached. On Linux/macOS Quopus runs `make` automatically; on **Windows** auto-build is disabled (a broken `make.exe` on PATH from an old MinGW install can crash with a DLL-load popup), so drop a prebuilt `tapclean.exe` into any of these locations — first hit wins: (1) `external/tapclean/src/`, (2) `external/tapclean/`, (3) `external/`, (4) system `PATH`. If TAPClean can't be built or run, Quopus falls back to a built-in pure-Python analyzer (`tap_analyzer.py`) that handles the CBM ROM loader plus the most common turbo loaders — not as complete, but no compiler required.
 
 **Block / file list** — the left pane lists every file found on the tape: the CBM ROM boot file(s) and each turbo-loaded part, with name, load–end address and size. Green = checksum OK, red = read errors. For a multi-stage game like R-Type Side 2 you'll see all 50 sub-files (M1–M8, G1–G8, S1–S8, …); a typical Ocean tape like Cobra lists 300+ blocks.
 
@@ -1452,7 +1452,7 @@ Beyond the 80+ built-in actions, you can drop your own Python files into a `cust
 **Where to put them.** Two directories are scanned, in this priority order:
 
 1. **`<exe-dir>/custom_modules/`** — portable / shipped alongside the application. Useful if you're distributing Quopus + a set of plugins as a bundle.
-2. **`<user-config-dir>/custom_modules/`** — your private modules. This is the default place for new plugins because it survives Quopus updates and lives in your normal config tree (`~/.config/quopus/custom_modules/` on Linux, `~/Library/Application Support/quopus/custom_modules/` on macOS, `%APPDATA%\quopus\custom_modules\` on Windows). The folder is created automatically with a quickstart `README.txt` on first run.
+2. **`<user-config-dir>/custom_modules/`** — your private modules. This is the default place for new plugins because it survives Quopus updates and lives in your normal config tree (`~/.config/quopus/custom_modules/` on Linux, `~/Library/Application Support/quopus/custom_modules/` on macOS, `%APPDATA%\quopus\custom_modules\` on Windows). The folder is created automatically with a quickstart `README.md` on first run.
 
 If a module with the same `ACTION_NAME` exists in both directories, the user-config one wins.
 
@@ -1504,7 +1504,9 @@ ACTION_PARAM_LABEL = "Folder name"      # placeholder text for the button-editor
 - **`example_hello.py`** — minimal "Hello, World" that shows how to read `api.selected` and `api.param`, and how to pop a `notify()` dialog. Use this as a starting point.
 - **`text_reader_sample.py`** — read-only text viewer for the file currently highlighted in the active panel. Demonstrates: lazy Qt imports inside `run()` to keep startup cheap, encoding fallback (UTF-8 → CP1252 → Latin-1), building a custom `QDialog` parented to Quopus's main window, `QShortcut`-based hotkeys (`Ctrl+F` find, `F3` find-next, `Escape` close), and `QFileDialog.getSaveFileName()` for "Save copy as..." with re-encoding to UTF-8.
 
-**Security note.** Custom modules execute in the same Python process as Quopus. They have the same filesystem and network privileges Quopus itself runs with — there is no sandboxing. Treat `custom_modules/` the way you'd treat `~/.bashrc`: only put code there that you wrote yourself or got from a source you trust. The first-run `README.txt` that Quopus drops into the folder repeats this warning so anyone you share your config tree with sees it too.
+**Security note.** Custom modules execute in the same Python process as Quopus. They have the same filesystem and network privileges Quopus itself runs with — there is no sandboxing. Treat `custom_modules/` the way you'd treat `~/.bashrc`: only put code there that you wrote yourself or got from a source you trust. The first-run `README.md` that Quopus drops into the folder repeats this warning so anyone you share your config tree with sees it too.
+
+**Full API reference.** For the complete list of `api` methods (panel context, output / notify, input dialogs, file pickers), how discovery and reload work in detail, and a roadmap into Quopus internals when the public API isn't enough, see **[`CUSTOM_MODULES.md`](CUSTOM_MODULES.md)** in the repository root.
 
 ### Subprocess handling
 External programs (Run, Shell, External Script, Execute Command, file associations) are launched **fully detached**:
@@ -1786,9 +1788,9 @@ Quopus looks for these binaries in a fixed order: (1) explicit path in `quopus.c
 | `lha` | LHA archive packing | LhaForge (Windows), liblhasa (Linux) |
 | `unrar` | RAR archive reading | WinRAR / unrar binary |
 
-Drop the binary into `<quopus>/external/` and Quopus picks it up on the next launch. No restart needed for viewers — the lookup happens each time you open a file. The directory contains a `README.txt` describing the convention.
+Drop the binary into `<quopus>/external/` and Quopus picks it up on the next launch. No restart needed for viewers — the lookup happens each time you open a file. The directory contains a `README.md` describing the convention.
 
-**TAPClean** is handled differently — its GPL **source** ships under `external/tapclean/src/` and Quopus compiles it on first use (needs `gcc`/`cc` + `make`), caching the binary. It powers the TAP cassette toolkit's loader identification and file extraction. On a machine without a compiler, drop a prebuilt `tapclean[.exe]` into `external/tapclean/src/`, or rely on the built-in Python fallback analyzer. See `external/tapclean/QUOPUS_INTEGRATION.md`.
+**TAPClean** is handled differently — its GPL **source** ships under `external/tapclean/src/`. On Linux/macOS Quopus compiles it on first use (needs `gcc`/`cc` + `make`), caching the binary. On **Windows** auto-build is disabled (too fragile); drop a prebuilt `tapclean.exe` into `external/tapclean/src/`, `external/tapclean/`, or `external/` — Quopus checks all three plus the system `PATH`. Without a binary the toolkit transparently uses the built-in Python fallback. See `external/tapclean/QUOPUS_INTEGRATION.md`.
 
 > **See also:** if `external_script` and `execute_command` aren't enough — e.g. you want a real Python function that pops dialogs, parses files, talks to APIs, then re-lists the panel — write it as a [custom module](#custom-modules-user-plugins) instead. Custom modules run in the Quopus process with full Qt access, get the active panel's selection passed in directly, and don't need any inter-process plumbing.
 
@@ -1921,7 +1923,7 @@ quopus_commander/
 │   ├── recoil2png[.exe]        #   552+ retro gfx formats for Retro GFX viewer
 │   ├── nibconv[.exe]           #   G64/NIB/NBZ → D64 for database scanner
 │   ├── unlzx[.exe]             #   LZX extraction for database scanner
-│   └── README.txt              #   Documents drop-in convention
+│   └── README.md              #   Documents drop-in convention
 ├── libsidwrapper.so            # SID engine wrapper (Linux x86-64, shipped)
 ├── sidwrapper.dll              # SID engine wrapper (Windows x86-64,
 │                                 #   shipped, fully statically linked)
@@ -2083,56 +2085,6 @@ quopus_commander/
                                 #   (retained for future Model B
                                 #   licensing; not used in Model C)
 ```
-
----
-
-## Trial release build system (.qpe encrypted modules)
-
-For shipping a patch-resistant trial build, Quopus has a runtime AES-GCM module-encryption layer + custom import hook. Premium-feature-bearing modules ship as `.qpe` files instead of `.py`, decrypted in memory at import time. Trial users can run them — the runtime `license.has_feature()` checks inside still gate features — but they can't open the source and patch those checks out.
-
-**Components**:
-
-- `build_trial_release.py` — the build driver, sits in the project root. Stages the project into a temp directory, encrypts the listed modules into `.qpe` in the staging copy only (source tree untouched), bakes the runtime keys into `quopus_keys.cfg`, sanity-checks for forbidden files, ZIPs the result as `quopus_build_YYYYMMDD_HHMMSS.zip`, deletes the staging dir.
-
-- `quopus_lib/_qpe_loader.py` — Python `sys.meta_path` finder/loader pair. When asked to import `quopus_lib.<name>` and there's no matching `.py`, it looks for `<name>.qpe` at the same location, decrypts via `crypto._decrypt_qpe()`, compiles + exec's the resulting bytes as a module. Falls through to the default Python finder when a real `.py` is present, so dev workflow is unaffected — the hook only fires in distribution builds.
-
-- `quopus_lib/__init__.py` — imports `_qpe_loader` first thing so the hook is registered before any other module loads.
-
-- `quopus_keys.cfg` — runtime configuration with two hex strings:
-  - `public_key_hex` — the production license-signature verification key (so Pro licenses verify correctly; without this, the verifier falls back to the demo key which can only validate Trial licenses)
-  - `master_key_hex` — the AES-256 key that decrypts the `.qpe` modules
-
-**Module list** — configured at the top of `build_trial_release.py` in `MODULES_TO_ENCRYPT`. Default protected set:
-- `license.py`, `license_ui.py` (license verification & nag screens)
-- `telnet_client.py`, `sid_player.py` (premium-feature modules)
-- `asm64_browser.py`, `db_browser.py`, `db_scanner.py` (modules with feature-gated paths)
-- `actions.py` (orchestration with multiple license gates)
-
-**Not encrypted by design**: `crypto.py` (the decryptor itself — encrypting it would create a chicken-and-egg circular dependency), `_qpe_loader.py` (the hook itself), `__init__.py` (package bootstrap).
-
-**Workflow**:
-1. Dev runs `python build_trial_release.py` in the project root
-2. First run creates `license_keygen_master.key` — back it up, this key encrypts every future shipped `.qpe`
-3. ZIP is produced in `<project>/quopus_build_*.zip`
-4. Customer extracts the ZIP, places their `.lic` file in `<quopus>/config/quopus.lic`
-5. Quopus boots, the import hook decrypts `.qpe` modules on demand, license verifier matches the embedded `public_key_hex` against the `.lic` signature
-
-**BUILD_INFO.txt** in the ZIP root lists the build timestamp, which modules are encrypted, and a checklist for diagnosing "module not found" errors after extraction.
-
-**CLI flags**:
-- `--skip-encrypt` — stage and ZIP the project as-is (no encryption), useful as a comparison baseline
-- `--keep-plaintext-in-zip` — debug aid: ship the `.py` alongside the `.qpe`. The import hook prefers `.py` when both exist, so this lets you verify the hook is wired up correctly before locking down to encrypted-only.
-- `--output-dir PATH` — where to write the ZIP (defaults to the project root, or `/mnt/user-data/outputs` if that exists)
-
-**Source tree stays clean** — the build script never modifies the original `.py` files. Encryption happens entirely in a temp staging directory under `%TEMP%/quopus_trial_staging/` which is deleted after the ZIP is written. Your dev workflow keeps unencrypted source for normal day-to-day editing.
-
-**Common issues**:
-
-- **"License invalid" / "Signature mismatch" after extracting a trial ZIP**: the `quopus_keys.cfg` in the ZIP is missing or has no `public_key_hex` line. Without that key Quopus falls back to the embedded demo public key which can only verify Trial licenses — Pro licenses signed by the production secret key get rejected as forgeries. Fix: rebuild with the current `build_trial_release.py` (which derives `public_key_hex` from `license_keygen_secret.key` via `license_keygen.py keys-cfg` and writes both `public_key_hex` and `master_key_hex` into the staging `quopus_keys.cfg`). Verify by `cat quopus_keys.cfg` in the extracted ZIP — both lines must be present, non-empty, and 64 hex chars each.
-
-- **`ModuleNotFoundError: No module named 'quopus_lib.actions'` at startup**: the import hook isn't running. Either `quopus_lib/_qpe_loader.py` is missing from the extracted ZIP, or `quopus_lib/__init__.py` doesn't import it as the first thing. Open `quopus_lib/__init__.py` and confirm it has `from . import _qpe_loader` on its first non-docstring line. Check `BUILD_INFO.txt` in the ZIP root to confirm you're running an actual trial build, not an older plaintext one.
-
-- **`ImportError: Failed to decrypt foo.qpe`**: the `master_key_hex` in `quopus_keys.cfg` doesn't match the key used to encrypt the `.qpe`. Most likely cause: the trial ZIP was rebuilt with a fresh `license_keygen_master.key` after the customer already extracted an earlier ZIP. Send the customer the matching new ZIP; alternatively keep a single master key file long-term (back it up immediately) and never let it get regenerated.
 
 ---
 
