@@ -1,7 +1,7 @@
 # Quopus
 
 <p align="center">
-  <img src="screenshots/logo.png" width="200" alt="Quopus Logo">
+  <img src="screenshots/logo.png" width="600" alt="Quopus Logo">
 </p>
 
 <p align="center">
