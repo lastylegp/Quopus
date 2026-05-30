@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 18:40
+# date_time: 2026-05-30 18:38
 """Action dispatcher - uses selected_or_tagged for all operations."""
 import os
 import platform
@@ -1769,6 +1769,17 @@ class ActionDispatcher:
             dlg.show()
         except Exception as e:
             QMessageBox.warning(self.w, "SID Playlist", str(e))
+
+    def act_youtube_audio(self, src, dst, param):
+        """YouTube Audio player. Search channels, bookmark them,
+        browse uploads newest-first, stream audio with a seek
+        slider and an LED spectrum EQ. Runs async (its own threads)
+        so Quopus stays usable while music plays."""
+        from . import youtube_audio
+        try:
+            youtube_audio.open_youtube_audio(self.w)
+        except Exception as e:
+            QMessageBox.warning(self.w, "YouTube Audio", str(e))
 
     def act_modplayer(self, src, dst, param):
         """MOD Player. Uses the selected .mod/.it/.s3m/.xm if any."""

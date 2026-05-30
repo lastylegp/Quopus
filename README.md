@@ -30,7 +30,8 @@ pip install lhafile       # LHA/LZH read (Amiga archives)
 pip install rarfile       # RAR read (also needs unrar binary on PATH)
 pip install py7zr         # 7Z archive read (used by the database scanner)
 pip install watchdog      # Native filesystem watching for the database
-pip install sounddevice numpy   # for the MOD and SID players
+pip install sounddevice numpy   # for the MOD, SID and YouTube players
+pip install yt-dlp        # for the YouTube Audio streaming player
 ```
 
 For **packing** RAR or LHA archives an external binary is required:
@@ -44,6 +45,8 @@ For the **Quopus Database** scanner, two extra command-line tools enable full di
 For **MOD / XM / S3M / IT playback** you need libopenmpt as a system library or shipped DLL — see the ProTracker-style Module Player section below for download links and exact filenames.
 
 For **U64 video recording (MP4 output)** the streamer's **Rec** button pipes raw frames through `ffmpeg` — install it via `apt install ffmpeg` (Linux), `brew install ffmpeg` (macOS), or grab a static build from https://www.gyan.dev/ffmpeg/builds/ (Windows) and put `ffmpeg.exe` on PATH. Without ffmpeg, Rec auto-falls-back to a PNG-sequence dump (one numbered PNG per frame, lossless but much larger on disk).
+
+For **YouTube Audio streaming** install `yt-dlp` (`pip install yt-dlp`) and have `ffmpeg` on PATH (see the ffmpeg note above); audio output uses the same `sounddevice`+`numpy` stack as the MOD/SID players. See the YouTube Audio streaming section below.
 
 For **SID playback** the wrapper DLLs are already shipped:
 - Linux: `libsidwrapper.so` ships with Quopus; system needs `libsidplayfp-dev` (`apt install libsidplayfp-dev sidplayfp`)
@@ -552,6 +555,20 @@ The schema is specifically designed to stay fast at this scale. Two architectura
   - **Title bar** shows `MULTI-SID (4 tunes)` instead of a single filename.
   - **Header** shows per-file PSID metadata: `Title by Author (Year)  ·  N×SID` for each tune.
   - **Triggered ONLY via right-click** "▶ Play as multi-SID" - never via plain double-click. Double-click on a tagged SID always opens the single-SID player to avoid surprises during regular browsing.
+
+### YouTube Audio streaming
+
+A built-in YouTube audio player, reachable from the **Audio ► YouTube** menu (or the `YT Audio` action button). It opens in its own non-modal window so Quopus stays fully usable while music plays — browse files, copy, run other tools; the player keeps going in the background. All network and decoding work runs in worker threads, so the UI never freezes.
+
+- **Channel search & bookmarks** — type an artist or channel name and press Enter. Matching channels appear in the results list; double-click one (or use the button) to save it as a bookmark. The search resolves channel handles directly (`youtube.com/@Name`), falls back to YouTube's channel-filtered search, and finally to a video search collapsed to its channels — so even channels whose videos don't rank for the query word are found.
+- **Track listing, newest first** — click a bookmark to list that channel's uploads, sorted by upload date with the newest at the top. Each row shows `[date]  title  (duration)`.
+- **Per-bookmark track cache** — the track list (with resolved upload dates) is cached per bookmark in the config, so reopening a bookmark shows its tracks instantly and only genuinely new uploads need a fresh date lookup. Upload dates are fetched in the background (flat extraction omits them) and the list re-sorts itself as they arrive.
+- **Playback with seek** — double-click a track to stream its audio. A **draggable seek slider** lets you jump anywhere in the track (click the groove or drag the handle); a `played X of Y` read-out shows the current position and total length.
+- **LED spectrum equalizer** — the same segmented 10-band analyzer the MOD and SID players use bounces along with the audio.
+- **Thumbnail preview** — the track's video thumbnail is shown in a preview box next to the title.
+- **Resume where you left off** — the last-played track (title + position) is saved. Reopen the player and it shows `Last played: … (resume at M:SS — press Play)`; pressing Play picks up right where you stopped.
+- **Cookie source for the bot check** — YouTube increasingly demands "sign in to confirm you're not a bot" for stream resolution. The player has a **Cookies** dropdown (Auto-detect / a specific browser / None); set it to the browser you're signed into YouTube with and it reads that browser's cookies via yt-dlp. The choice is remembered.
+- **Requirements**: `yt-dlp` (channel search + stream resolution), `ffmpeg` on PATH (decodes any codec to PCM), and `sounddevice` + `numpy` (audio output — the same stack the MOD player uses). If any are missing the player tells you exactly what to install.
 
 ### Retro GFX Viewer
 
@@ -1961,6 +1978,9 @@ quopus_commander/
     │                           #   hex+search, histogram, waveform, report)
     ├── mod_player.py           # ProTracker-style module player
     │                           #   (libopenmpt via ctypes + sounddevice)
+    ├── youtube_audio.py        # YouTube audio streaming player
+    │                           #   (yt-dlp + ffmpeg + sounddevice,
+    │                           #    bookmarks, seek, LED EQ, resume)
     ├── sid_player.py           # GoatTracker-style SID player
     │                           #   (libsidplayfp via libsidwrapper +
     │                           #    parallel vis engine for per-voice scopes)

@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 18:40
+# date_time: 2026-05-30 18:47
 """
 Main window layout:
 
@@ -1804,20 +1804,42 @@ class QuopusMain(QMainWindow):
         # include_custom=True appends a "Custom Modules" group
         # built from the loaded user plugins. If no plugins are
         # loaded that group is skipped automatically.
+        #
+        # Groups whose name starts with "Audio: " are collected
+        # under a single top-level "Audio" menu as submenus, so the
+        # menu bar shows one "Audio" entry with SID / MOD / YouTube
+        # inside it rather than three separate top-level menus. The
+        # action keys and dispatch are unchanged - this is purely
+        # how they're presented in the bar.
         groups = get_action_groups(include_custom=True)
-        for group_name, items in groups:
-            if not items:
-                continue
-            menu = mb.addMenu(group_name)
+
+        def _add_items(menu, items):
             for key, label in items:
                 act = QAction(label, self)
-                # Bind the action key as a closure default so
-                # each menu item dispatches its own action and
-                # not whatever the last loop iteration assigned.
+                # Bind the action key as a closure default so each
+                # menu item dispatches its own action and not
+                # whatever the last loop iteration assigned.
                 act.triggered.connect(
                     lambda _checked=False, k=key:
                         self.actions.dispatch(k))
                 menu.addAction(act)
+
+        audio_menu = None
+        for group_name, items in groups:
+            if not items:
+                continue
+            if group_name.startswith("Audio: "):
+                # Lazily create the shared Audio menu, then add this
+                # group as a submenu named after the part after the
+                # colon ("SID", "MOD", "YouTube").
+                if audio_menu is None:
+                    audio_menu = mb.addMenu("Audio")
+                sub_label = group_name.split(":", 1)[1].strip()
+                sub = audio_menu.addMenu(sub_label)
+                _add_items(sub, items)
+            else:
+                menu = mb.addMenu(group_name)
+                _add_items(menu, items)
 
     def _on_splitter_moved(self, _pos=None, _idx=None):
         """Persist the lister splitter widths whenever the user

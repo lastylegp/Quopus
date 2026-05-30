@@ -1,3 +1,4 @@
+# date_time: 2026-05-30 18:24
 """
 Custom-module loader for Quopus Commander.
 
@@ -320,34 +321,37 @@ def load_all() -> None:
 def _write_readme_if_missing(d: Path) -> None:
     """Drop a quickstart README into the user's custom_modules
     folder on first creation so they know what goes there."""
-    readme = d / "README.txt"
+    readme = d / "README.md"
     if readme.exists():
         return
     try:
         readme.write_text(
-            "Quopus Custom Modules\n"
-            "=====================\n\n"
+            "# Quopus Custom Modules\n\n"
             "Drop your own Python files into this folder to add\n"
             "new action-buttons to Quopus. Each module needs at\n"
             "least:\n\n"
-            "    ACTION_NAME = \"my_action\"\n"
-            "    def run(api):\n"
-            "        api.notify(\"Hello\", \"It works!\")\n\n"
+            "```python\n"
+            "ACTION_NAME = \"my_action\"\n\n"
+            "def run(api):\n"
+            "    api.notify(\"Hello\", \"It works!\")\n"
+            "```\n\n"
             "Optional metadata:\n\n"
-            "    ACTION_LABEL = \"My Action\"\n"
-            "    ACTION_DESCRIPTION = \"What it does\"\n"
-            "    ACTION_PARAM_LABEL = \"Folder name\"\n\n"
+            "```python\n"
+            "ACTION_LABEL = \"My Action\"\n"
+            "ACTION_DESCRIPTION = \"What it does\"\n"
+            "ACTION_PARAM_LABEL = \"Folder name\"\n"
+            "```\n\n"
             "Files whose names start with an underscore are\n"
             "treated as helper modules and not loaded as actions\n"
             "(use those for shared code imported by your real\n"
             "modules).\n\n"
             "After editing or adding a file, pick\n"
-            "  Config -> Reload custom modules\n"
-            "in Quopus or restart the application to pick up\n"
-            "the changes.\n\n"
-            "SECURITY: custom modules run in the same Python\n"
-            "process as Quopus. They have full filesystem and\n"
-            "network access. Only put code here that you trust.\n",
+            "**Config -> Reload custom modules** in Quopus or\n"
+            "restart the application to pick up the changes.\n\n"
+            "## Security\n\n"
+            "Custom modules run in the same Python process as\n"
+            "Quopus. They have full filesystem and network\n"
+            "access. Only put code here that you trust.\n",
             encoding="utf-8")
     except Exception:
         pass
@@ -494,6 +498,18 @@ class CustomModuleAPI:
         path = QFileDialog.getExistingDirectory(
             self.parent_widget, title)
         return Path(path) if path else None
+
+    # ---- persistence -----------------------------------------
+    def save_config(self) -> None:
+        """Persist the runtime config dict to disk. Use after
+        mutating api.config so your changes survive a restart
+        (e.g. a plugin storing its own bookmarks / settings under
+        a private key)."""
+        try:
+            from .config import save_config as _save
+            _save(getattr(self._host.w, "config", {}))
+        except Exception as e:
+            print(f"[custom_module] save_config failed: {e}")
 
 
 # ---------------------------------------------------------------------

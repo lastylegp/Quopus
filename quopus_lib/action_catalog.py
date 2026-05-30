@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 12:38
+# date_time: 2026-05-30 18:38
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -86,6 +86,9 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("modplayer",          "MOD Player (single file)"),
         ("modplayer_playlist", "MOD Playlist (browse selected)"),
         ("shuffle_mods",       "Shuffle play modules"),
+    ]),
+    ("Audio: YouTube", [
+        ("youtube_audio",      "YouTube Audio player"),
     ]),
     ("CBM / C64 tools", [
         ("d64editor",     "D64/D71/D81 disk editor"),
