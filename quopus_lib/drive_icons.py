@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 18:55
+# date_time: 2026-06-01 22:19
 """
 Drive button icon rendering for the lister's drives bar.
 
@@ -514,8 +514,51 @@ def render_globe(size: int = 32) -> QPixmap:
     return pm
 
 
-def render_usb(size: int = 32) -> QPixmap:
-    """Mixed-style helper: a USB stick."""
+def render_terminal_window(size: int = 32) -> QPixmap:
+    """Mixed-style helper: a small terminal/console window with a
+    title bar and a green command prompt, used for the 'open a
+    command shell here' button in the drives bar. (Distinct from
+    render_terminal(label,...) which is a selectable drive-icon
+    style - this one is a standalone console-window glyph.)"""
+    pm = _new_pixmap(size, size)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    s = size
+    # Window body (dark console)
+    body = QRectF(1.5, 3, s - 3, s - 6)
+    p.setPen(QPen(QColor("#000000"), 0.8))
+    p.setBrush(QColor("#1c1c1c"))
+    p.drawRoundedRect(body, 2, 2)
+    # Title bar
+    tbar = QRectF(1.5, 3, s - 3, s * 0.22)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#3a6ea5"))
+    p.drawRoundedRect(tbar, 2, 2)
+    # square off the bottom of the title bar
+    p.drawRect(QRectF(1.5, 3 + tbar.height() * 0.5,
+                      s - 3, tbar.height() * 0.5))
+    # Three little window dots
+    p.setBrush(QColor("#e0e0e0"))
+    dot_y = 3 + tbar.height() * 0.5
+    dr = max(0.8, s * 0.035)
+    for i in range(3):
+        p.drawEllipse(QPointF(s * 0.16 + i * s * 0.11, dot_y),
+                      dr, dr)
+    # Green prompt  >_
+    f = QFont("Courier New", max(6, int(s * 0.30)))
+    f.setBold(True)
+    f.setStyleHint(QFont.StyleHint.TypeWriter)
+    p.setFont(f)
+    p.setPen(QColor("#33ff66"))
+    p.drawText(QRectF(s * 0.16, s * 0.34, s * 0.8, s * 0.6),
+               int(Qt.AlignmentFlag.AlignLeft
+                   | Qt.AlignmentFlag.AlignVCenter),
+               ">_")
+    p.end()
+    return pm
+
+
+
     pm = _new_pixmap(size, size)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing, True)

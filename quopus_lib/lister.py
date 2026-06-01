@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 21:44
+# date_time: 2026-06-01 22:19
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -790,6 +790,41 @@ class FileLister(QWidget):
         inner_layout.setSpacing(1)
         inner.setStyleSheet(
             f"QWidget {{ background-color: {C.WB_GREY}; }}")
+
+        # Terminal / command-shell button at the very start of the
+        # bar (so it's always visible, never scrolled off). Click =
+        # open a cmd shell in this lister's current folder, like
+        # Total Commander's 'cmd' button.
+        try:
+            from . import drive_icons
+            from PyQt6.QtGui import QIcon
+            from PyQt6.QtCore import QSize
+            term_btn = QToolButton()
+            tpm = drive_icons.render_terminal_window(size=20)
+            if tpm is not None and not tpm.isNull():
+                term_btn.setIcon(QIcon(tpm))
+                term_btn.setIconSize(QSize(tpm.width(), tpm.height()))
+                term_btn.setToolButtonStyle(
+                    Qt.ToolButtonStyle.ToolButtonIconOnly)
+            else:
+                term_btn.setText(">_")
+            term_btn.setToolTip(
+                "Open command shell here (current folder)")
+            term_btn.setStyleSheet(
+                f"QToolButton {{ background-color: {C.WB_GREY}; "
+                f"color: {C.BLACK}; "
+                f"border: 1px outset {C.BLACK}; "
+                f"padding: 1px 3px; min-width: 18px; }} "
+                f"QToolButton:hover {{ "
+                f"background-color: {C.SELECTED}; "
+                f"color: {C.WHITE}; }}")
+            term_btn.clicked.connect(
+                lambda _checked=False: self.open_shell_here())
+            inner_layout.addWidget(term_btn)
+        except Exception:
+            # Never let the shell button break the whole drives bar.
+            pass
+
         try:
             from .config import _system_default_drives
             drives = _system_default_drives()
@@ -2318,6 +2353,98 @@ class FileLister(QWidget):
                 subprocess.run(["xdg-open", str(p)])
         except Exception as e:
             QMessageBox.warning(self, "Quopus", f"Cannot open: {e}")
+
+    def _shell_cwd(self):
+        """Return a real local directory to open a shell in, or
+        None if this lister isn't showing a local path (remote /
+        search-results views have no on-disk cwd)."""
+        try:
+            if getattr(self.fs, "kind", None) != "local":
+                return None
+        except Exception:
+            return None
+        p = getattr(self, "current_path", None)
+        if p is None:
+            return None
+        p = Path(p)
+        # If somehow a file slipped in, fall back to its folder.
+        if p.is_file():
+            p = p.parent
+        return p if p.is_dir() else None
+
+    def open_shell_here(self):
+        """Open a command shell with its working directory set to
+        the lister's current folder - the Total Commander 'cmd'
+        behaviour. Picks the right launcher per OS:
+          Windows : a new cmd.exe console window (cd /d <path>)
+          macOS   : Terminal.app at the folder
+          Linux   : the first available terminal emulator, falling
+                    back through a list of common ones.
+        """
+        cwd = self._shell_cwd()
+        if cwd is None:
+            QMessageBox.information(
+                self, "Open shell",
+                "A command shell can only be opened for a local "
+                "folder.\nThis panel is currently showing a "
+                "remote or search-results view.")
+            return
+        cwd_str = str(cwd)
+        sysname = platform.system()
+        try:
+            if sysname == "Windows":
+                # Open a new cmd.exe window already cd'd into the
+                # folder. /K keeps the window open after the cd so
+                # the user gets an interactive prompt (like TC).
+                # cwd= makes the new console start there too, which
+                # also gives the correct drive.
+                subprocess.Popen(
+                    ["cmd.exe", "/K", f"cd /d {cwd_str}"],
+                    cwd=cwd_str,
+                    creationflags=getattr(
+                        subprocess, "CREATE_NEW_CONSOLE", 0))
+            elif sysname == "Darwin":
+                subprocess.Popen(["open", "-a", "Terminal", cwd_str])
+            else:
+                self._launch_linux_terminal(cwd_str)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Open shell",
+                f"Couldn't open a command shell:\n{e}")
+
+    def _launch_linux_terminal(self, cwd_str):
+        """Try a series of common Linux terminal emulators until
+        one launches. Each needs a slightly different flag to set
+        the working directory / keep a shell open."""
+        # (executable, args) - {cwd} substituted below. Order =
+        # rough popularity / likelihood of being installed.
+        candidates = [
+            ("x-terminal-emulator", []),          # Debian alternative
+            ("gnome-terminal", []),               # GNOME
+            ("konsole", ["--workdir", cwd_str]),  # KDE
+            ("xfce4-terminal", []),               # XFCE
+            ("mate-terminal", []),                # MATE
+            ("lxterminal", []),                   # LXDE
+            ("alacritty", ["--working-directory", cwd_str]),
+            ("kitty", ["--directory", cwd_str]),
+            ("xterm", []),                        # universal fallback
+        ]
+        import shutil
+        for exe, extra in candidates:
+            if shutil.which(exe) is None:
+                continue
+            try:
+                # gnome-terminal / xterm honour the process cwd= for
+                # the starting directory; konsole/alacritty/kitty
+                # take an explicit flag (already in `extra`).
+                subprocess.Popen([exe] + extra, cwd=cwd_str)
+                return
+            except Exception:
+                continue
+        QMessageBox.warning(
+            self, "Open shell",
+            "No terminal emulator found. Install one of: "
+            "gnome-terminal, konsole, xfce4-terminal, xterm.")
 
     def _ctx_menu(self, pos):
         self.got_focus.emit(self)
