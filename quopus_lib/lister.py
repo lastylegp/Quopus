@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 19:19
+# date_time: 2026-06-01 12:38
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -1144,6 +1144,7 @@ class FileLister(QWidget):
                     self.history.append(old_cwd)
                     self.forward_stack.clear()
                 self.refresh()
+                self._focus_first_row()
                 self.path_changed.emit(self.fs.pwd())
             except Exception as e:
                 if not self._handle_remote_error(e, "Cannot cd"):
@@ -1161,6 +1162,7 @@ class FileLister(QWidget):
                 from .fs_backend import LocalFs
                 self.fs = LocalFs(p)
                 self.refresh()
+                self._focus_first_row()
                 self.path_changed.emit(str(p))
             else:
                 QMessageBox.warning(self, "Quopus", f"Not a directory:\n{p}")
@@ -1174,13 +1176,15 @@ class FileLister(QWidget):
             self.forward_stack.append(self.fs.pwd())
             try: self.fs.cd(prev)
             except Exception: return
-            self.refresh(); self.path_changed.emit(prev)
+            self.refresh(); self._focus_first_row()
+            self.path_changed.emit(prev)
         else:
             self.forward_stack.append(self.current_path)
             self.current_path = prev
             from .fs_backend import LocalFs
             self.fs = LocalFs(prev)
             self.refresh()
+            self._focus_first_row()
             self.path_changed.emit(str(prev))
 
     def go_forward(self):
@@ -1190,13 +1194,15 @@ class FileLister(QWidget):
             self.history.append(self.fs.pwd())
             try: self.fs.cd(nxt)
             except Exception: return
-            self.refresh(); self.path_changed.emit(nxt)
+            self.refresh(); self._focus_first_row()
+            self.path_changed.emit(nxt)
         else:
             self.history.append(self.current_path)
             self.current_path = nxt
             from .fs_backend import LocalFs
             self.fs = LocalFs(nxt)
             self.refresh()
+            self._focus_first_row()
             self.path_changed.emit(str(nxt))
 
     def parent_dir(self):
@@ -1276,6 +1282,33 @@ class FileLister(QWidget):
             self.goto(drive + "/")
         else:
             self.goto("/")
+
+    def _focus_first_row(self):
+        """Move the keyboard cursor to the first entry so the user
+        can start navigating with the arrow keys right away after
+        entering a directory - no need to press Down first.
+
+        Called from the navigation methods (goto / go_back /
+        go_forward), NOT from refresh() itself: a plain refresh
+        (F5, filter change, tag toggle) must leave the current
+        cursor where it is. Only changing directory resets it.
+        """
+        try:
+            if self.model.rowCount() <= 0:
+                return
+            idx = self.model.index(0, 0)
+            self.view.setCurrentIndex(idx)
+            sel = self.view.selectionModel()
+            if sel is not None:
+                from PyQt6.QtCore import QItemSelectionModel
+                sel.select(
+                    idx,
+                    QItemSelectionModel.SelectionFlag.ClearAndSelect
+                    | QItemSelectionModel.SelectionFlag.Rows)
+            self.view.scrollToTop()
+        except Exception:
+            # Focus is a convenience; never let it break navigation.
+            pass
 
     def refresh(self):
         self.path_edit.setText(self.fs.display_path())
