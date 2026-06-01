@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 12:38
+# date_time: 2026-06-01 21:44
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -1652,15 +1652,25 @@ class FileLister(QWidget):
         self.path_changed.emit(self.fs.pwd())
 
     def set_search_results_fs(self, search_root: Path,
-                                 label: str, files: list):
+                                 label: str, files: list,
+                                 content_term=None,
+                                 content_kind=None):
         """Show a flat list of search-result files in this lister.
         The original directory layout is replaced with a virtual
         view; each entry shows its source folder in the new Folder
         column. Use disconnect_search() (or right-click → Close
         search results) to return to normal browsing.
 
-        files: list of pathlib.Path entries from FindDialog."""
+        files: list of pathlib.Path entries from FindDialog.
+        content_term/content_kind: the raw text/hex that was
+        searched for (kind = 'text' or 'hex'), remembered so that
+        opening a result with F3 can pre-fill the viewer's search
+        box. None for filename/assembly searches."""
         from .fs_backend import SearchResultsFs
+        # Remember the content search term so the viewer (F3) can
+        # pre-fill its search box and jump to the first hit.
+        self.search_content_term = content_term
+        self.search_content_kind = content_kind
         # Save current local path so disconnect_search can return there
         self._pre_search_path = (self.current_path
                                   if self.fs.kind == 'local' else None)
@@ -1689,6 +1699,9 @@ class FileLister(QWidget):
         if self.fs.kind != 'search':
             return
         from .fs_backend import LocalFs
+        # Forget the remembered content search term.
+        self.search_content_term = None
+        self.search_content_kind = None
         target = (self._pre_search_path
                   if getattr(self, '_pre_search_path', None) is not None
                   else Path.home())
@@ -2055,10 +2068,15 @@ class FileLister(QWidget):
 
         # Internal mode - dispatch by 'type'
         t = handler.get("type", "auto")
+        # If we're showing content-search results, hand the term to
+        # the viewer so its search box is pre-filled and jumps to
+        # the first hit (text searches -> text mode, hex -> hex).
+        _sterm = getattr(self, "search_content_term", None)
+        _skind = getattr(self, "search_content_kind", None)
         if t == "auto":
             self._auto_open(p)
         elif t == "text":
-            TextReader(p, self).exec()
+            TextReader(p, self, initial_search=_sterm).exec()
         elif t == "image":
             from .image_viewer import ImageViewer
             ImageViewer(p, self).exec()
@@ -2073,7 +2091,8 @@ class FileLister(QWidget):
             v.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
             v.show()
         elif t == "hex":
-            HexReader(p, self).exec()
+            HexReader(p, self, initial_search=_sterm,
+                      initial_search_is_hex=(_skind == "hex")).exec()
         elif t == "c64disasm":
             # LNX-archive-wrapped-in-PRG (e.g. 'game.lnx.prg' from BBS
             # uploads) and ZipCode parts (e.g. '1!FOO.prg' .. '4!FOO.prg')
@@ -2258,7 +2277,8 @@ class FileLister(QWidget):
             return
         ext = p.suffix.lower()
         if ext in self._AUTO_TEXT_EXTS or p.name.lower() in self._AUTO_TEXT_NAMES:
-            TextReader(p, self).exec()
+            _sterm = getattr(self, "search_content_term", None)
+            TextReader(p, self, initial_search=_sterm).exec()
         else:
             self._open_file(p)
 

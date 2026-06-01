@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 18:32
+# date_time: 2026-06-01 21:44
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII
@@ -331,9 +331,10 @@ class TextReader(QDialog):
         "PETSCII (upper mode)",
     ]
 
-    def __init__(self, path, parent=None):
+    def __init__(self, path, parent=None, initial_search=None):
         super().__init__(parent)
         self.path = Path(path)
+        self._initial_search = initial_search
         self.setWindowTitle(f"Read: {self.path.name}")
         self.setStyleSheet(f"QDialog {{ background-color: {C.WB_GREY}; }}")
         self.resize(1000, 720)
@@ -578,6 +579,22 @@ class TextReader(QDialog):
         enable_key_scrolling(self, self._active_scroll_widget,
                              focus=False)
         QTimer.singleShot(120, self._focus_active_view)
+
+        # If opened from a content search (Alt+F7), pre-fill the
+        # search box with the term that was searched for, so the
+        # user can immediately Find-next through the hits.
+        if self._initial_search:
+            self.txt_search_edit.setText(self._initial_search)
+            QTimer.singleShot(140, self._prefill_search_jump)
+
+    def _prefill_search_jump(self):
+        """After the content has loaded, run the pre-filled search
+        so the first match is highlighted right away."""
+        try:
+            if self.txt_search_edit.text():
+                self._text_search(forward=True)
+        except Exception:
+            pass
 
     def _focus_active_view(self):
         """Give the visible content view keyboard focus so the
@@ -1678,9 +1695,12 @@ class _HexEditWidget(QPlainTextEdit):
 
 
 class HexReader(QDialog):
-    def __init__(self, path, parent=None):
+    def __init__(self, path, parent=None, initial_search=None,
+                 initial_search_is_hex=True):
         super().__init__(parent)
         self.path = Path(path)
+        self._initial_search = initial_search
+        self._initial_search_is_hex = initial_search_is_hex
         self.setWindowTitle(f"Hex Read: {self.path.name}")
         self.resize(820, 600)
         self.setStyleSheet(f"QDialog {{ background-color: {C.WB_GREY}; }}")
@@ -1857,6 +1877,21 @@ class HexReader(QDialog):
         # Arrow / Page / Home / End scroll the hex view right away.
         from .viewer_scroll import enable_key_scrolling
         enable_key_scrolling(self, self.text)
+
+        # Pre-fill the search box when opened from a content search
+        # (Alt+F7). Match the search mode to the kind of search that
+        # was run: a hex search keeps the "Hex" box ticked, a text
+        # search unticks it so the term is matched as text.
+        if self._initial_search:
+            try:
+                self.cb_search_hex.setChecked(
+                    bool(self._initial_search_is_hex))
+                self.search_edit.setText(self._initial_search)
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(60,
+                                  lambda: self._search(forward=True))
+            except Exception:
+                pass
 
     def _render(self):
         try:

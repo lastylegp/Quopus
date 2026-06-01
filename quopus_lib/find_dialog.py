@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 21:47
+# date_time: 2026-06-01 21:44
 """Find Files dialog (Alt+F7) - Total Commander-style.
 
 Three search modes in a single tabbed dialog:
@@ -482,6 +482,11 @@ class FindDialog(QDialog):
         match_fn = None
         read_content = False
         searching_for_label = ""
+        # Raw content search term + kind, forwarded to the lister so
+        # F3 can pre-fill the viewer's search box. Only text/hex
+        # searches set these; filename/asm leave them cleared.
+        self._content_term = None
+        self._content_kind = None
         if idx == 0:    # Filename
             pattern = self._name_edit.text().strip() or "*"
             match_fn = _build_glob_match(
@@ -499,6 +504,8 @@ class FindDialog(QDialog):
                 needle, glob, self._text_case.isChecked())
             searching_for_label = (
                 f"text '{needle}' in files matching '{glob}'")
+            self._content_term = needle
+            self._content_kind = "text"
             read_content = True
         elif idx == 2:  # Hex
             hex_str = self._hex_edit.text()
@@ -516,6 +523,8 @@ class FindDialog(QDialog):
                 return
             searching_for_label = (
                 f"hex '{hex_str.strip()}' in files matching '{glob}'")
+            self._content_term = hex_str.strip()
+            self._content_kind = "hex"
             read_content = True
         elif idx == 3:  # Assembly
             asm_src = self._asm_edit.toPlainText()
@@ -606,7 +615,9 @@ class FindDialog(QDialog):
         label = self._search_label if hasattr(self, '_search_label') \
                   else "files"
         self._lister.set_search_results_fs(
-            self._root, label, files)
+            self._root, label, files,
+            content_term=getattr(self, "_content_term", None),
+            content_kind=getattr(self, "_content_kind", None))
         self.accept()
 
     def _on_finished(self, matches: int, scanned: int):

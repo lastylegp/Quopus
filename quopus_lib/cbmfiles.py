@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-06-01 19:24
 """
 cbmfiles - Commodore 8-bit disk image reader, viewer, and extractor.
 
@@ -2936,6 +2936,21 @@ class CbmDiskDialog(QDialog):
         self._cell_size = 16
         self._build_layout()
         QShortcut(QKeySequence("Esc"), self, self.close)
+
+    def closeEvent(self, ev):
+        """Release the disk image's file handle when the dialog
+        closes. Without this the underlying .d64/.d71/.d81 stays
+        open for the lifetime of the dialog object, which on Windows
+        means other programs (and the user) can't delete or move the
+        file until Quopus exits. CbmDiskReader.close() is safe to
+        call repeatedly and on in-memory (LNX/ZipCode) readers too.
+        """
+        try:
+            if getattr(self, "reader", None) is not None:
+                self.reader.close()
+        except Exception:
+            pass
+        super().closeEvent(ev)
 
     @classmethod
     def from_lnx_prg(cls, path, parent=None) -> "CbmDiskDialog":
