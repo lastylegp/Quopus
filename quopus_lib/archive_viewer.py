@@ -1,3 +1,4 @@
+# date_time: 2026-06-01 18:32
 """Internal archive viewer. Supports zip, tar.gz, tar.bz2, lha (read-only).
 
 Shows a Quopus-style list of files inside the archive, lets you:
@@ -498,6 +499,11 @@ class ArchiveViewer(QDialog):
         QShortcut(QKeySequence("F3"), self, self._view_selected)
         QShortcut(QKeySequence("F4"), self, self._hex_selected)
         QShortcut(QKeySequence("Escape"), self, self.accept)
+
+        # Let arrow / page keys work on the file tree right away.
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self.tree)
+        self.tree.setFocus()
 
     def _populate(self):
         self.tree.clear()

@@ -1,3 +1,4 @@
+# date_time: 2026-06-01 18:32
 """C64 graphics viewers: character set, Koala painter, Hi-Res bitmap.
 
 Drei Dialoge in einem Modul - alle Q nicht-modal, parent=lister, mit
@@ -1401,12 +1402,15 @@ class KoalaViewer(QDialog):
         self._zoom = 2
 
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setWidgetResizable(True)
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet("background-color: #222;")
         scroll.setWidget(self.lbl_img)
         layout.addWidget(scroll, 1)
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self.scroll)
 
         # Decode + render
         self._image = self._decode_koala()
@@ -1561,12 +1565,15 @@ class HiresViewer(QDialog):
         self._zoom = 2
 
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setWidgetResizable(True)
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet("background-color: #222;")
         scroll.setWidget(self.lbl_img)
         layout.addWidget(scroll, 1)
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self.scroll)
 
         self._image = self._decode_hires()
         self._render()
@@ -2192,12 +2199,15 @@ class BitmapViewer(QDialog, FolderBrowserMixin):
 
         # Scroll area mit Bild
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setWidgetResizable(True)
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet("background-color: #222;")
         scroll.setWidget(self.lbl_img)
         layout.addWidget(scroll, 1)
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self.scroll)
 
         # Status bar mit Folder-Nav-Info
         self.lbl_status = QLabel()
@@ -2384,12 +2394,15 @@ class RecoilViewer(QDialog, FolderBrowserMixin):
 
         # Image area
         scroll = QScrollArea()
+        self.scroll = scroll
         scroll.setWidgetResizable(True)
         self.lbl_img = QLabel()
         self.lbl_img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.lbl_img.setStyleSheet("background-color: #222;")
         scroll.setWidget(self.lbl_img)
         layout.addWidget(scroll, 1)
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self.scroll)
 
         # Status bar mit Folder-Nav-Info
         self.lbl_status = QLabel()

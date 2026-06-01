@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 22:29
+# date_time: 2026-06-01 18:32
 """
 Viewers:
   TextReader - plain text + color ANSI + color PETSCII
@@ -568,6 +568,35 @@ class TextReader(QDialog):
         self._reload("Auto")
         from PyQt6.QtCore import QTimer
         QTimer.singleShot(80, lambda: self._reload(self.cb_enc.currentText()))
+
+        # Arrow / PageUp/Down / Home / End scroll whichever view is
+        # currently visible (plain text, colour text or bitmap),
+        # without having to click into it first. We install the
+        # filter now but defer the initial focus until after the
+        # delayed reload has decided which view is visible.
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self._active_scroll_widget,
+                             focus=False)
+        QTimer.singleShot(120, self._focus_active_view)
+
+    def _focus_active_view(self):
+        """Give the visible content view keyboard focus so the
+        arrow / page keys scroll it immediately."""
+        try:
+            from PyQt6.QtCore import Qt as _Qt
+            self._active_scroll_widget().setFocus(
+                _Qt.FocusReason.OtherFocusReason)
+        except Exception:
+            pass
+
+    def _active_scroll_widget(self):
+        """Return the content widget currently on screen so the
+        keyboard-scroll helper drives the right one."""
+        if self.bitmap_scroll.isVisible():
+            return self.bitmap_scroll
+        if self.text_color.isVisible():
+            return self.text_color
+        return self.text_plain
 
     def _show_notice(self):
         """Show a centered 'Rendering...' notice overlay."""
@@ -1824,6 +1853,10 @@ class HexReader(QDialog):
         self._suppress_dirty = False     # set while we render programmatically
         self._backup_made = False        # one .bak per dialog session
         self._render()
+
+        # Arrow / Page / Home / End scroll the hex view right away.
+        from .viewer_scroll import enable_key_scrolling
+        enable_key_scrolling(self, self.text)
 
     def _render(self):
         try:
