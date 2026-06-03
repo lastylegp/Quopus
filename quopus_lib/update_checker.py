@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:26
+# date_time: 2026-06-03 18:37
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local installation is behind the
@@ -658,16 +658,14 @@ def _pull_update_tree_diff(
     import hashlib, shutil
 
     def _report(stage: str) -> None:
+        # NOTE: only forward to progress_cb. The outer _report in
+        # pull_update() does the stderr print already - duplicating
+        # it here was producing two lines per stage in the console.
         if progress_cb is not None:
             try:
                 progress_cb(stage)
             except Exception:
                 pass
-        try:
-            import sys
-            print("[update]", stage, file=sys.stderr, flush=True)
-        except Exception:
-            pass
 
     # 1) Fetch the recursive tree listing
     tree_url = (
