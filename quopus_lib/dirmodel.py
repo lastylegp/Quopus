@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-06-04 00:12
 """Virtualized table model with tagged-items support (space key).
 Four columns: Name, Ext, Size, Date. Sortable via header click."""
 from datetime import datetime
@@ -36,6 +36,48 @@ class TaggedItemDelegate(QStyledItemDelegate):
         self._sel_fg = QColor(C.SELECTED_FG)
         self._dir_fg = QColor(C.LISTER_DIR)
         self._file_fg = QColor(C.LISTER_FG)
+        # Per-extension foreground overrides. Populated by
+        # set_lister_colors() from config; falls back to
+        # _file_fg for any extension not in the map.
+        # Keys are lowercase including the leading dot (".prg").
+        self._ext_colors: dict[str, QColor] = {}
+
+    def set_lister_colors(self, fg: str, dir_fg: str,
+                          ext_colors: dict | None = None):
+        """Apply lister colors at runtime. Called by FileLister
+        whenever the user changes colors in the Settings dialog,
+        and also during init from the config."""
+        try:
+            self._file_fg = QColor(fg)
+        except Exception:
+            pass
+        try:
+            self._dir_fg = QColor(dir_fg)
+        except Exception:
+            pass
+        self._ext_colors = {}
+        if isinstance(ext_colors, dict):
+            for ext, c in ext_colors.items():
+                try:
+                    self._ext_colors[ext.lower()] = QColor(c)
+                except Exception:
+                    pass
+
+    def _entry_fg(self, entry) -> QColor:
+        """Pick the right foreground color for one entry.
+        Directories use _dir_fg; files check the extension map
+        first and fall back to _file_fg."""
+        if entry.is_dir:
+            return self._dir_fg
+        # Extract extension - last dot, lowercase
+        nm = entry.name or ""
+        i = nm.rfind(".")
+        if i > 0:
+            ext = nm[i:].lower()
+            c = self._ext_colors.get(ext)
+            if c is not None:
+                return c
+        return self._file_fg
 
     def paint(self, painter, option, index):
         entry = self._model.entry_at(index.row())
@@ -54,7 +96,7 @@ class TaggedItemDelegate(QStyledItemDelegate):
             fg = self._sel_fg
         else:
             bg = None
-            fg = self._dir_fg if entry.is_dir else self._file_fg
+            fg = self._entry_fg(entry)
 
         painter.save()
         if bg is not None:
@@ -136,6 +178,54 @@ class DirModel(QAbstractTableModel):
         self._file_color = QBrush(QColor(C.LISTER_FG))
         self._tagged_bg = QBrush(QColor(C.TAGGED_BG))
         self._tagged_fg = QBrush(QColor(C.TAGGED_FG))
+        # Per-extension foreground brushes - same data as the
+        # delegate's _ext_colors but pre-wrapped in QBrush for
+        # the ForegroundRole return path. Populated by
+        # set_lister_colors().
+        self._ext_brushes: dict[str, QBrush] = {}
+
+    def set_lister_colors(self, fg: str, dir_fg: str,
+                          ext_colors: dict | None = None):
+        """Apply colors at runtime - rewraps the brushes and
+        emits dataChanged for every visible row so the view
+        repaints immediately."""
+        try:
+            self._file_color = QBrush(QColor(fg))
+        except Exception:
+            pass
+        try:
+            self._dir_color = QBrush(QColor(dir_fg))
+        except Exception:
+            pass
+        self._ext_brushes = {}
+        if isinstance(ext_colors, dict):
+            for ext, c in ext_colors.items():
+                try:
+                    self._ext_brushes[ext.lower()] = QBrush(
+                        QColor(c))
+                except Exception:
+                    pass
+        # Force every row to repaint with the new colors.
+        if self.order:
+            top = self.index(0, 0)
+            bot = self.index(len(self.order) - 1,
+                             self.columnCount() - 1)
+            self.dataChanged.emit(
+                top, bot, [Qt.ItemDataRole.ForegroundRole])
+
+    def _entry_brush(self, entry) -> QBrush:
+        """Brush for one entry. Dir -> _dir_color, file with
+        recognised extension -> _ext_brushes, else _file_color."""
+        if entry.is_dir:
+            return self._dir_color
+        nm = entry.name or ""
+        i = nm.rfind(".")
+        if i > 0:
+            ext = nm[i:].lower()
+            br = self._ext_brushes.get(ext)
+            if br is not None:
+                return br
+        return self._file_color
 
     def rowCount(self, parent=QModelIndex()):
         if parent.isValid():
@@ -241,7 +331,7 @@ class DirModel(QAbstractTableModel):
         if role == Qt.ItemDataRole.ForegroundRole:
             if is_tagged:
                 return self._tagged_fg
-            return self._dir_color if e.is_dir else self._file_color
+            return self._entry_brush(e)
 
         if role == Qt.ItemDataRole.BackgroundRole:
             if is_tagged:

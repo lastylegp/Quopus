@@ -1,3 +1,4 @@
+# date_time: 2026-06-03 21:33
 """Window state persistence for module dialogs.
 
 Stores window geometry (position + size) and table column widths
@@ -155,7 +156,7 @@ class _WindowStateFilter(QObject):
         _save()
 
 
-def install_window_state(widget: QWidget, key: str) -> None:
+def install_window_state(widget: QWidget, key: str) -> bool:
     """Restore + persist a top-level widget's window geometry.
 
     Call from the widget's __init__ AFTER the layout is set up
@@ -164,6 +165,11 @@ def install_window_state(widget: QWidget, key: str) -> None:
     default. From then on, every move and every resize is
     auto-saved to disk with 500ms debounce.
 
+    Returns True when a saved geometry was applied, False when
+    no entry existed. Callers that want to fall back to a
+    computed default (e.g. adjustSize() based on child widget
+    sizeHints) can use this to decide.
+
     Args:
         widget: The QDialog / QMainWindow / QWidget to track.
         key:    A short stable identifier - typically the module
@@ -171,6 +177,7 @@ def install_window_state(widget: QWidget, key: str) -> None:
     """
     state = _load()
     saved = state["windows"].get(key)
+    restored = False
     if saved:
         try:
             # Clamp to a reasonable on-screen position - if the
@@ -194,6 +201,7 @@ def install_window_state(widget: QWidget, key: str) -> None:
             widget.setGeometry(x, y, w, h)
             if saved.get("maximized"):
                 widget.showMaximized()
+            restored = True
         except (TypeError, ValueError, KeyError):
             # Corrupt entry - ignore and use defaults
             pass
@@ -204,6 +212,7 @@ def install_window_state(widget: QWidget, key: str) -> None:
     # local variable. Qt's parent system handles deletion when
     # the widget dies.
     widget._window_state_filter = f
+    return restored
 
 
 # ============================================================

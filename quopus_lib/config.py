@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 11:57
+# date_time: 2026-06-04 00:12
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -464,6 +464,67 @@ DEFAULT_CONFIG = {
     "text_reader_font_size": 11,
     "text_reader_fg": "#FFFFFF",
     "text_reader_bg": "#000000",
+    # Lister panel colors. Set via Settings -> Lister colors.
+    # lister_bg is the panel background; lister_fg is the default
+    # text color for files; lister_dir_fg is for directory rows.
+    # lister_ext_colors maps lowercase extension (".prg", ".py")
+    # to a hex color string - it overrides lister_fg for matching
+    # files. Missing extensions fall back to lister_fg.
+    "lister_bg": "#a0a0a0",
+    "lister_fg": "#000000",
+    "lister_dir_fg": "#0000cc",
+    "lister_ext_colors": {
+        # C64 / Amiga binaries
+        ".prg":  "#0050d0",
+        ".sid":  "#c850c0",
+        ".mod":  "#50a850",
+        ".d64":  "#d07020",
+        ".d71":  "#d07020",
+        ".d81":  "#d07020",
+        ".d82":  "#d07020",
+        ".g64":  "#d07020",
+        ".t64":  "#d07020",
+        ".tap":  "#d07020",
+        ".crt":  "#a06030",
+        ".nib":  "#d07020",
+        ".lha":  "#707070",
+        ".lzx":  "#707070",
+        ".adf":  "#d07020",
+        # Source code
+        ".py":   "#a040c0",
+        ".c":    "#c04020",
+        ".h":    "#c04020",
+        ".cpp":  "#c04020",
+        ".s":    "#c06020",
+        ".asm":  "#c06020",
+        ".bas":  "#207050",
+        ".js":   "#c0a020",
+        ".html": "#a04060",
+        ".css":  "#207090",
+        # Docs / text
+        ".txt":  "#505050",
+        ".md":   "#505050",
+        ".nfo":  "#505050",
+        ".diz":  "#505050",
+        ".pdf":  "#a02020",
+        # Archives
+        ".zip":  "#606060",
+        ".7z":   "#606060",
+        ".rar":  "#606060",
+        ".tar":  "#606060",
+        ".gz":   "#606060",
+        # Images
+        ".png":  "#208050",
+        ".jpg":  "#208050",
+        ".jpeg": "#208050",
+        ".gif":  "#208050",
+        ".bmp":  "#208050",
+        # Audio
+        ".mp3":  "#5050a0",
+        ".wav":  "#5050a0",
+        ".ogg":  "#5050a0",
+        ".flac": "#5050a0",
+    },
     # Telegram client chat-bubble colors. Outgoing (your own)
     # messages vs. incoming. Each has a background and text color.
     # Editable via the Telegram window's "Colors..." button.

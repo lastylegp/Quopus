@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 22:19
+# date_time: 2026-06-04 00:28
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -436,7 +436,8 @@ class FileLister(QWidget):
         from PyQt6.QtWidgets import QHeaderView
         self.view = _DnDTreeView(self)
         self.view.setModel(self.model)
-        self.view.setItemDelegate(TaggedItemDelegate(self.model, self.view))
+        self._delegate = TaggedItemDelegate(self.model, self.view)
+        self.view.setItemDelegate(self._delegate)
         self.view.setStyleSheet(LISTER_QSS + SCROLLBAR_QSS + f"""
             QHeaderView::section {{
                 background-color: {C.WB_GREY};
@@ -502,6 +503,83 @@ class FileLister(QWidget):
         self.info_bar.setStyleSheet(INFOBAR_QSS)
         self.info_bar.setFixedHeight(18)
         outer.addWidget(self.info_bar)
+
+        # Apply user-configured lister colors (background, default
+        # fg, dir fg, per-extension fg). Reads from the main
+        # window's live config dict (so changes via Settings ->
+        # Lister colors take effect immediately).
+        self.apply_lister_colors()
+
+    def apply_lister_colors(self):
+        """Restyle the lister panel with the current config-defined
+        colors. Called once during __init__ and again whenever the
+        user edits colors in the settings dialog. Safe to call
+        before the view exists - it no-ops in that case."""
+        if not hasattr(self, "view") or self.view is None:
+            return
+        # Source colors from the main window's live config if
+        # available, falling back to load_config() from disk.
+        cfg = None
+        try:
+            mw = self.window()
+            cfg = getattr(mw, "config", None)
+        except Exception:
+            cfg = None
+        if not isinstance(cfg, dict):
+            try:
+                from .config import load_config
+                cfg = load_config()
+            except Exception:
+                cfg = {}
+        bg = cfg.get("lister_bg", C.LISTER_BG)
+        fg = cfg.get("lister_fg", C.LISTER_FG)
+        dir_fg = cfg.get("lister_dir_fg", C.LISTER_DIR)
+        ext_colors = cfg.get("lister_ext_colors") or {}
+        # Push colors into both the model (for ForegroundRole
+        # consumers) and the delegate (for direct paint).
+        if hasattr(self.model, "set_lister_colors"):
+            self.model.set_lister_colors(fg, dir_fg, ext_colors)
+        if hasattr(self._delegate, "set_lister_colors"):
+            self._delegate.set_lister_colors(fg, dir_fg, ext_colors)
+        # Restyle the view stylesheet with the new background.
+        # The header section style stays based on the static
+        # WB_GREY palette - users haven't asked for header
+        # recolouring.
+        body_qss = f"""
+QListView {{
+    background-color: {bg};
+    color: {fg};
+    font-family: "Topaz-8", "Topaz", "Courier New", monospace;
+    font-size: {scaled_font_px(12)}px;
+    border: 1px solid {C.BLACK};
+    selection-background-color: {C.SELECTED};
+    selection-color: {C.SELECTED_FG};
+    outline: none;
+    alternate-background-color: {bg};
+    show-decoration-selected: 0;
+}}
+QTreeView {{
+    background-color: {bg};
+    color: {fg};
+}}
+"""
+        self.view.setStyleSheet(body_qss + SCROLLBAR_QSS + f"""
+            QHeaderView::section {{
+                background-color: {C.WB_GREY};
+                color: {C.BLACK};
+                padding: 2px 6px;
+                border: 1px solid {C.BLACK};
+                font-family: "Topaz-8","Topaz","Courier New",monospace;
+                font-size: {scaled_font_px(11)}px;
+                font-weight: bold;
+            }}
+            QTreeView {{ show-decoration-selected: 1; }}
+            QTreeView::item {{ border: 0; padding: 0 2px; }}
+            QTreeView::branch {{ background: transparent; }}
+        """)
+        # Force a repaint so directories switch to their new
+        # color even when the row geometry didn't change.
+        self.view.viewport().update()
 
     def _on_header_clicked(self, logical_index):
         self.model.sort_by_column(logical_index)
@@ -2394,15 +2472,29 @@ class FileLister(QWidget):
         try:
             if sysname == "Windows":
                 # Open a new cmd.exe window already cd'd into the
-                # folder. /K keeps the window open after the cd so
-                # the user gets an interactive prompt (like TC).
-                # cwd= makes the new console start there too, which
-                # also gives the correct drive.
+                # folder. We use `pushd` rather than `cd /d` because
+                # cmd.exe refuses a UNC path (\\server\share\...) as
+                # its working directory ("UNC paths are not
+                # supported") and falls back to C:\Windows. `pushd`
+                # transparently maps a UNC path to a temporary drive
+                # letter and switches to it, and works for normal
+                # local paths too. /K keeps the prompt open after
+                # the pushd so the user gets an interactive shell.
+                # We must NOT pass cwd= for a UNC path - Popen would
+                # try to set the process working dir to the UNC path
+                # and Windows would reject it the same way; pushd
+                # inside cmd handles the switch instead.
+                is_unc = cwd_str.startswith("\\\\") or \
+                    cwd_str.startswith("//")
+                popen_kwargs = {
+                    "creationflags": getattr(
+                        subprocess, "CREATE_NEW_CONSOLE", 0),
+                }
+                if not is_unc:
+                    popen_kwargs["cwd"] = cwd_str
                 subprocess.Popen(
-                    ["cmd.exe", "/K", f"cd /d {cwd_str}"],
-                    cwd=cwd_str,
-                    creationflags=getattr(
-                        subprocess, "CREATE_NEW_CONSOLE", 0))
+                    ["cmd.exe", "/K", f'pushd "{cwd_str}"'],
+                    **popen_kwargs)
             elif sysname == "Darwin":
                 subprocess.Popen(["open", "-a", "Terminal", cwd_str])
             else:
@@ -3555,20 +3647,11 @@ class FileLister(QWidget):
     def _reapply_view_stylesheet(self):
         """Rebuild the QTreeView's inline stylesheet so the
         embedded scaled_font_px(N) calls re-evaluate against
-        the current scale factor. Call this from refresh_fonts."""
-        from .palette import LISTER_QSS, SCROLLBAR_QSS, C
-        from .config import scaled_font_px
-        self.view.setStyleSheet(LISTER_QSS + SCROLLBAR_QSS + f"""
-            QHeaderView::section {{
-                background-color: {C.WB_GREY};
-                color: {C.BLACK};
-                padding: 2px 6px;
-                border: 1px solid {C.BLACK};
-                font-family: "Topaz-8","Topaz","Courier New",monospace;
-                font-size: {scaled_font_px(11)}px;
-                font-weight: bold;
-            }}
-            QTreeView {{ show-decoration-selected: 1; }}
-            QTreeView::item {{ border: 0; padding: 0 2px; }}
-            QTreeView::branch {{ background: transparent; }}
-        """)
+        the current scale factor. Call this from refresh_fonts.
+
+        Important: we route through apply_lister_colors() so the
+        user-configured bg/fg/dir colors survive the rebuild.
+        Without this, the Appearance dialog's font refresh used
+        to clobber the lister palette by re-applying the static
+        default LISTER_QSS."""
+        self.apply_lister_colors()
