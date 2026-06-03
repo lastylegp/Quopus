@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:37
+# date_time: 2026-06-03 18:41
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local installation is behind the
@@ -495,7 +495,7 @@ def _pull_update_incremental(
     # 3) Execute the plan.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_dir = root / ".update_backup" / stamp
-    copied = removed = renamed = 0
+    copied = removed = renamed = unchanged = 0
     skipped_locked = []
     skipped_error = []
     total = len(plan)
@@ -533,8 +533,16 @@ def _pull_update_incremental(
                 # Backup if exists.
                 if dest.is_file():
                     try:
-                        if dest.read_bytes() == data:
-                            continue  # already current
+                        local = dest.read_bytes()
+                        # Direct byte match OR same content after
+                        # CRLF normalisation (Windows local + LF
+                        # remote = different bytes, same logical
+                        # file - don't rewrite).
+                        if local == data or (
+                                local.replace(b"\r\n", b"\n")
+                                == data.replace(b"\r\n", b"\n")):
+                            unchanged += 1
+                            continue
                     except Exception:
                         pass
                     bk = backup_dir / dest_rel
@@ -591,15 +599,26 @@ def _pull_update_incremental(
             "file." % e)
 
     # 5) Build report.
+    headline = (f"Incremental update applied "
+                f"({cmp_data.get('ahead_by', '?')} commits, "
+                f"{len(plan)} file change(s)).")
+    if not copied and not removed and not renamed \
+            and unchanged == len(plan) and unchanged > 0:
+        # GitHub reported a diff but the local files are already
+        # byte-identical to remote (or CRLF-equivalent). Common
+        # after an out-of-band sync. Nothing to write, just bump
+        # installed_version.txt.
+        headline = (
+            f"Already up to date by file content "
+            f"({unchanged} of {len(plan)} files matched).")
     lines = [
-        f"Incremental update applied "
-        f"({cmp_data.get('ahead_by', '?')} commits, "
-        f"{len(plan)} file change(s)).",
-        f"  Wrote:   {copied}",
-        f"  Removed: {removed}",
+        headline,
+        f"  Wrote:     {copied}",
+        f"  Unchanged: {unchanged}",
+        f"  Removed:   {removed}",
     ]
     if renamed:
-        lines.append(f"  Renamed: {renamed}")
+        lines.append(f"  Renamed:   {renamed}")
     if skipped_locked:
         lines.append("")
         lines.append("Locked (close Quopus and re-run "
@@ -614,10 +633,11 @@ def _pull_update_incremental(
         lines.append("Errors:")
         for n in skipped_error[:10]:
             lines.append("  " + n)
-    if copied or removed or renamed:
+    if copied or removed or renamed or unchanged:
         lines.append("")
-        lines.append(f"Backup: {backup_dir}")
-        lines.append("")
+        if copied or removed or renamed:
+            lines.append(f"Backup: {backup_dir}")
+            lines.append("")
         if version_write_error:
             lines.append(version_write_error)
         else:
@@ -625,7 +645,8 @@ def _pull_update_incremental(
                 f"Registered installed version: {to_sha[:7]}  "
                 f"(config/installed_version.txt)")
         lines.append("")
-        lines.append("Restart Quopus to load the new code.")
+        if copied or removed or renamed:
+            lines.append("Restart Quopus to load the new code.")
     return (True, "\n".join(lines), False)
 
 
