@@ -1,36 +1,39 @@
-# date_time: 2026-06-03 17:08
+# date_time: 2026-06-03 17:48
 """GitHub update checker for Quopus Commander.
 
-Checks at startup whether the local working copy is behind the
-remote main branch on GitHub, and offers to pull the latest changes
-in place. The check runs in a background thread so the UI never
-blocks, even if the network is slow or down.
+Checks at startup whether the local installation is behind the
+remote main branch on GitHub, and offers to apply the latest
+changes in place. The check runs in a background thread so the
+UI never blocks, even if the network is slow or down.
 
-Two backends, tried in this order:
-  1. Local `git` binary (preferred). We run `git fetch origin main`
-     followed by `git rev-list --count HEAD..origin/main`. This is
-     authoritative and works even if the local clone uses a fork.
-  2. GitHub REST API (fallback). Compares the local HEAD SHA (read
-     from .git/HEAD without needing the git binary) against the
-     branch's latest commit on api.github.com.
+NO git involvement anywhere - the checker behaves identically
+on a developer's git clone and a standard-user ZIP install. The
+single source of truth for the locally installed SHA is
+`config/installed_version.txt`, written by `pull_update` after
+a successful in-app update. If that file is missing, the local
+SHA is treated as unknown and an update is offered so the user
+gets a chance to register their version.
 
-Either path produces an UpdateInfo with:
-  - is_update_available
-  - commits_behind (best-effort)
-  - latest_commit_short, latest_commit_message
+All HTTP work goes through `urllib`; no external dependencies.
+Both the SHA probe (`_quick_remote_info`) and the full check
+(`_check_via_api`) hit the public `/commits/<branch>` endpoint
+on api.github.com.
+
+UpdateInfo carries:
+  - is_update_available (True when local SHA missing or differs)
+  - commits_behind (1 in the API path, no diff arithmetic)
+  - latest_sha, latest_commit_short, latest_commit_message
   - latest_commit_date
-  - method ("git" / "api" / "fallback")
+  - method ("api" / "cache")
 
-The "Update now" action runs `git pull --ff-only origin main` in
-the same background thread and reports success or failure.
+The "Update now" action either downloads the changed files via
+the compare API (incremental, typical few KB) or the full
+branch ZIP as a fallback.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
-import subprocess
-import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -68,220 +71,68 @@ class UpdateInfo:
     latest_commit_short: str = ""
     latest_commit_message: str = ""
     latest_commit_date: str = ""
-    method: str = ""           # "git" / "api" / "cache"
+    method: str = ""           # "api" / "cache"
     repo_root: str = ""        # absolute path to the local clone
-    # True when this check just initialised installed_version.txt
-    # for a fresh no-git install (we recorded the current remote
-    # SHA as 'installed' because we had no other reference). The
-    # UI uses it to phrase a friendly first-run message instead
-    # of pretending the user was on this commit all along.
+    # True when this check just wrote installed_version.txt for
+    # the first time (no prior local SHA). The UI uses this to
+    # stay silent - it's a routine 'register the version'
+    # operation, not a real update event.
     first_run_init: bool = False
 
 
 # ------------------------------------------------------------------
-# Repo discovery
+# Repo discovery + local SHA - NO git involvement
 # ------------------------------------------------------------------
+# The update mechanism deliberately never touches a local .git
+# directory. Standard end-users won't have git installed, won't
+# have a .git/ folder, and we don't want two different code
+# paths to maintain (dev-with-git vs user-without-git). One
+# source of truth: config/installed_version.txt, written by
+# pull_update after a successful in-app update. If it's missing,
+# we don't know what version is installed - that's a deliberate
+# signal that lets the UI prompt the user to update.
+
 def _find_repo_root(start: Optional[Path] = None) -> Optional[Path]:
-    """Walk up from `start` to find the Quopus install root.
-
-    Two-pass discovery so the `.git` directory wins even when
-    `quopus.py` sits in a subfolder of the actual repo (e.g.
-    Mario's `_master2publish/` next to a `.git/` one level up):
-
-      Pass 1: walk up the entire tree looking for a `.git`.
-              If found, that's the root - even if a `quopus.py`
-              marker was passed on the way up.
-      Pass 2: walk up again, this time accepting a `quopus.py`
-              next to `quopus_lib/` as the root. Used for
-              ZIP-only installs that have no git directory
-              anywhere up the chain."""
-    starts_from = (start or Path(__file__).resolve()).parent
-
-    # Pass 1: .git anywhere up the tree.
-    p = starts_from
-    for _ in range(8):
-        if (p / ".git").exists():
-            return p
-        if p.parent == p:
-            break
-        p = p.parent
-
-    # Pass 2: quopus.py + quopus_lib (no git at all).
-    p = starts_from
+    """Walk up from `start` looking for the Quopus install root.
+    The marker is `quopus.py` sitting next to `quopus_lib/`.
+    Stops as soon as that pair is found."""
+    p = (start or Path(__file__).resolve()).parent
     for _ in range(8):
         if (p / "quopus.py").is_file() \
                 and (p / "quopus_lib").is_dir():
             return p
         if p.parent == p:
-            break
+            return None
         p = p.parent
     return None
 
 
-def _git_binary_available() -> bool:
-    """Probe for a working `git` executable. We don't trust PATH
-    alone - some Windows installs (esp. when Git was uninstalled
-    while a tab in PATH lingered) leave a stub that crashes on
-    invocation."""
-    try:
-        r = subprocess.run(
-            ["git", "--version"],
-            capture_output=True, text=True, timeout=5)
-        return r.returncode == 0 and "git version" in r.stdout
-    except (FileNotFoundError, OSError,
-            subprocess.TimeoutExpired):
-        return False
-
-
-# ------------------------------------------------------------------
-# Local SHA - works without git binary by reading .git/HEAD
-# ------------------------------------------------------------------
 def _read_local_sha(repo_root: Path) -> Optional[str]:
-    """Return the SHA the local working copy is at.
-
-    Tries two sources, in order:
-      1. .git/HEAD (works for proper git checkouts, no git binary
-         needed - we read the file directly)
-      2. config/installed_version.txt (written by pull_update on
-         every successful update so even ZIP-only installs without
-         a .git folder can be compared against the remote)"""
-    head_file = repo_root / ".git" / "HEAD"
-    if head_file.is_file():
-        try:
-            head_text = head_file.read_text(
-                encoding="utf-8").strip()
-        except Exception:
-            head_text = ""
-        if head_text.startswith("ref:"):
-            ref_path = head_text[4:].strip()
-            ref_file = repo_root / ".git" / ref_path
-            if ref_file.is_file():
-                try:
-                    return ref_file.read_text(
-                        encoding="utf-8").strip()
-                except Exception:
-                    pass
-            # Packed refs fallback - common after `git gc`.
-            packed = repo_root / ".git" / "packed-refs"
-            if packed.is_file():
-                try:
-                    for line in packed.read_text(
-                            encoding="utf-8").splitlines():
-                        line = line.strip()
-                        if not line or line.startswith("#") \
-                                or line.startswith("^"):
-                            continue
-                        parts = line.split()
-                        if len(parts) == 2 \
-                                and parts[1] == ref_path:
-                            return parts[0]
-                except Exception:
-                    pass
-        elif re.fullmatch(r"[0-9a-fA-F]{40}", head_text):
-            # Detached HEAD - HEAD itself is a SHA.
-            return head_text
-    # Fallback: previous Quopus update wrote the SHA here.
+    """Return the SHA recorded in config/installed_version.txt,
+    or None if the file isn't there / unreadable / malformed.
+    This is the ONLY source the checker accepts as 'what's
+    installed locally'. No git, no fallbacks."""
     installed = repo_root / "config" / "installed_version.txt"
-    if installed.is_file():
-        try:
-            sha = installed.read_text(encoding="utf-8").strip()
-            if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
-                return sha
-        except Exception:
-            pass
-    return None
-
-
-# ------------------------------------------------------------------
-# Backend 1 - local git
-# ------------------------------------------------------------------
-def _check_via_git(repo_root: Path) -> UpdateInfo:
-    """Use the local git binary: fetch, then compare HEAD to
-    origin/main. This is the most reliable check because it sees
-    the user's actual branch and handles forks / detached HEADs."""
-    info = UpdateInfo(repo_root=str(repo_root), method="git")
+    if not installed.is_file():
+        return None
     try:
-        # Refresh the local view of the remote without touching the
-        # working tree. --quiet keeps the worker log small.
-        fetch = subprocess.run(
-            ["git", "fetch", "--quiet", "origin", DEFAULT_BRANCH],
-            cwd=str(repo_root),
-            capture_output=True, text=True, timeout=30)
-        if fetch.returncode != 0:
-            info.error = ("git fetch failed: %s"
-                          % (fetch.stderr.strip() or "rc=%d"
-                             % fetch.returncode))
-            return info
-        local = _run_git(
-            repo_root, ["rev-parse", "HEAD"])
-        remote = _run_git(
-            repo_root, ["rev-parse", "origin/" + DEFAULT_BRANCH])
-        if local is None or remote is None:
-            info.error = "Couldn't read HEAD / origin SHA"
-            return info
-        info.local_sha = local
-        info.latest_sha = remote
-        if local == remote:
-            info.ok = True
-            return info
-        # Count commits we're behind. If the local HEAD is ahead
-        # (e.g. user has uncommitted local commits), commits_behind
-        # will simply be 0 - which makes is_update_available False.
-        behind = _run_git(
-            repo_root,
-            ["rev-list", "--count",
-             "HEAD..origin/" + DEFAULT_BRANCH])
-        try:
-            info.commits_behind = int(behind or "0")
-        except ValueError:
-            info.commits_behind = 0
-        # Latest commit details from the remote tip.
-        subj = _run_git(
-            repo_root,
-            ["log", "-1", "--format=%s",
-             "origin/" + DEFAULT_BRANCH])
-        date = _run_git(
-            repo_root,
-            ["log", "-1", "--format=%ci",
-             "origin/" + DEFAULT_BRANCH])
-        info.latest_commit_short = remote[:7]
-        info.latest_commit_message = subj or ""
-        info.latest_commit_date = date or ""
-        info.is_update_available = info.commits_behind > 0
-        info.ok = True
-        return info
-    except subprocess.TimeoutExpired:
-        info.error = "git operation timed out"
-        return info
-    except Exception as e:
-        info.error = "git error: %s" % e
-        return info
-
-
-def _run_git(repo_root: Path, args: list) -> Optional[str]:
-    """Run a short git command and return stdout stripped, or None
-    on error. Used for one-shot queries where we don't need to
-    surface the error individually."""
-    try:
-        r = subprocess.run(
-            ["git"] + args,
-            cwd=str(repo_root),
-            capture_output=True, text=True, timeout=10)
-        if r.returncode != 0:
-            return None
-        return r.stdout.strip()
+        sha = installed.read_text(encoding="utf-8").strip()
     except Exception:
         return None
+    if re.fullmatch(r"[0-9a-fA-F]{40}", sha):
+        return sha
+    return None
 
 
 # ------------------------------------------------------------------
 # Backend 2 - GitHub REST API
 # ------------------------------------------------------------------
 def _check_via_api(repo_root: Optional[Path]) -> UpdateInfo:
-    """No git binary, or git fetch failed - fall back to the public
-    REST API. Compares the local SHA (read from .git/HEAD) against
-    the remote branch tip. Can't compute 'commits behind' reliably
-    via the simple commits endpoint, so we report 0 or 1 instead."""
+    """Hit the public REST API for the latest commit on the
+    branch. The local SHA comes from config/installed_version.txt
+    (via _read_local_sha). When that file is absent, local SHA
+    is left empty - the caller treats that as 'update available'
+    so the user is prompted on first run."""
     info = UpdateInfo(
         repo_root=str(repo_root) if repo_root else "",
         method="api")
@@ -305,36 +156,39 @@ def _check_via_api(repo_root: Optional[Path]) -> UpdateInfo:
             if local:
                 info.local_sha = local
             elif info.latest_sha:
-                # First-run init for no-git installs (typical
-                # standard-user case: downloaded the ZIP, no
-                # .git, no installed_version.txt yet). Without
-                # this, every check would render "(unknown)" as
-                # the local HEAD forever. We can't actually know
-                # which version they installed, but it's most
-                # likely the current branch tip (they just got
-                # it), so we record that. The next time the
-                # remote moves, that becomes a real update.
+                # First run: no installed_version.txt yet. Register
+                # the current remote SHA as 'installed' so the next
+                # check has a comparison point. NO download, NO
+                # dialog - we silently mark the user as up-to-date
+                # against this exact commit. If the local files
+                # are actually older, the next time someone pushes
+                # to main the difference will surface and the
+                # update dialog will fire normally.
                 try:
-                    cfg_dir = repo_root / "config"
-                    cfg_dir.mkdir(parents=True, exist_ok=True)
-                    (cfg_dir / "installed_version.txt"
-                     ).write_text(info.latest_sha + "\n",
-                                  encoding="utf-8")
+                    _write_installed_version(
+                        repo_root, info.latest_sha)
                     info.local_sha = info.latest_sha
                     info.first_run_init = True
                 except Exception:
-                    # Read-only install dir? Leave local_sha
-                    # empty and the UI will show '(unknown)' as
-                    # a fallback. Not great but not fatal.
+                    # Read-only install? Leave local_sha empty.
+                    # The check_for_updates wrapper will treat it
+                    # as 'update available' and the user gets
+                    # prompted - not pretty, but not lethal.
                     pass
         info.ok = True
-        if info.latest_sha and info.local_sha \
-                and info.local_sha != info.latest_sha:
-            info.is_update_available = True
-            # Without compare API we don't know the count; treat
-            # "1+" as the safe display value. The user-facing
-            # dialog shows the commit subject anyway.
-            info.commits_behind = 1
+        if info.latest_sha:
+            # Update is 'available' when local is genuinely behind
+            # remote. After first_run_init local == latest so this
+            # stays False; first-time users are silently aligned.
+            if info.local_sha and info.local_sha != info.latest_sha:
+                info.is_update_available = True
+                info.commits_behind = 1
+            elif not info.local_sha:
+                # The write failed (permissions?). Surface the
+                # update prompt so the user at least knows
+                # something needs doing.
+                info.is_update_available = True
+                info.commits_behind = 1
         return info
     except HTTPError as e:
         info.error = "GitHub API HTTP %d" % e.code
@@ -390,16 +244,20 @@ def check_for_updates(
     """Blocking check - always call this from a worker thread.
     The UI helpers below already wrap it in QThread for you.
 
-    Path selection:
-      - If `known_remote_sha` matches the current remote tip we
-        return immediately with is_update_available=False and
-        method='cache' - no git fetch, no second API call. This
-        is the fast path for repeated startups when nothing has
-        changed upstream.
-      - Proper git checkout + git binary -> `_check_via_git`
-        (fastest accurate path, counts commits exactly).
-      - Anything else -> `_check_via_api` (HTTP only, also works
-        on ZIP-only installs).
+    Two paths:
+      * Cache fast path: if `known_remote_sha` is the same as the
+        current remote tip, we skip everything and return what we
+        already know. Used for repeated startups where nothing has
+        moved on GitHub.
+      * Full API check: hit /commits, compare with
+        config/installed_version.txt.
+
+    NO git involvement anywhere - we always behave like a no-git
+    end-user install. Single source of truth for the local SHA is
+    `config/installed_version.txt` (written by pull_update after
+    a successful in-app update). When that file is absent, local
+    SHA is unknown and `is_update_available` is True so the user
+    gets prompted on first run.
     """
     repo_root = _find_repo_root()
     if repo_root is None:
@@ -407,18 +265,21 @@ def check_for_updates(
             ok=False,
             error="Couldn't locate the Quopus install directory.")
     # Fast path: caller hands us the last remote SHA they saw;
-    # if the branch tip hasn't moved, we can stop here without
-    # doing a fetch or pulling commit metadata.
+    # if the branch tip hasn't moved, we return immediately.
     if known_remote_sha:
         rinfo = _quick_remote_info()
         if rinfo is not None \
                 and rinfo["sha"] == known_remote_sha:
             current = rinfo["sha"]
             local = _read_local_sha(repo_root) or ""
+            # Same is_update_available rule as the full path: when
+            # local is empty (no installed_version.txt yet), we
+            # have no proof of what's installed, so it counts as
+            # 'update available' to surface the dialog.
+            update_available = (not local) or (local != current)
             return UpdateInfo(
                 ok=True,
-                is_update_available=(local != "" and
-                                     local != current),
+                is_update_available=update_available,
                 local_sha=local,
                 latest_sha=current,
                 latest_commit_short=current[:7],
@@ -426,24 +287,13 @@ def check_for_updates(
                 latest_commit_date=rinfo["date"],
                 repo_root=str(repo_root),
                 method="cache",
-                # Mirror the count from previous runs as best-effort
-                # - we genuinely don't know without a fetch.
-                commits_behind=(1 if local != current
-                                and local else 0),
+                commits_behind=(1 if update_available else 0),
             )
-    has_git_dir = (repo_root / ".git").exists()
-    if has_git_dir and _git_binary_available():
-        info = _check_via_git(repo_root)
-        if info.ok:
-            return info
-        api_info = _check_via_api(repo_root)
-        if api_info.ok:
-            return api_info
-        return info
     return _check_via_api(repo_root)
 
 
-def pull_update(repo_root: str, from_sha: str = "") -> tuple:
+def pull_update(repo_root: str, from_sha: str = "",
+                to_sha: str = "") -> tuple:
     """Apply the latest version from GitHub. Returns (success, msg).
 
     Two strategies are tried in order:
@@ -461,32 +311,56 @@ def pull_update(repo_root: str, from_sha: str = "") -> tuple:
 
     Both paths protect config/, cache/, .git/, _master2publish/
     and friends, and back up every overwritten file into
-    `<repo>/.update_backup/<timestamp>/`.
+    `<repo>/.update_backup/<timestamp>/`. The destination SHA
+    (`to_sha`) is recorded in `config/installed_version.txt` so
+    subsequent checks know what's installed. The caller normally
+    knows this SHA from the preceding update check; if they
+    pass an empty `to_sha` we probe the API for it ourselves.
     """
     root = Path(repo_root)
     if not root.is_dir():
         return (False, "Repo root doesn't exist: " + repo_root)
+
+    # Resolve target SHA if caller didn't pass one. We need it
+    # to record installed_version.txt at the end.
+    if not to_sha or not re.fullmatch(
+            r"[0-9a-fA-F]{40}", to_sha):
+        rinfo = _quick_remote_info()
+        if rinfo is not None:
+            to_sha = rinfo["sha"]
+    if not to_sha:
+        return (False,
+                "Couldn't determine the target commit SHA from "
+                "GitHub. Check your network and try again.")
+
     # Incremental path - only worth attempting when we know
     # what we're updating from.
     if from_sha and re.fullmatch(r"[0-9a-fA-F]{40}", from_sha):
         ok, msg, fall_through = _pull_update_incremental(
-            root, from_sha)
+            root, from_sha, to_sha)
         if not fall_through:
             return (ok, msg)
         # else fall through to ZIP
-    return _pull_update_zip(root)
+    return _pull_update_zip(root, to_sha)
 
 
 # How many changed files we're willing to fetch one-by-one before
-# admitting the full ZIP is the more efficient option. The compare
-# API itself caps at 300 anyway, but even before that point the
-# round-trip overhead of many tiny HTTPs starts to dominate.
-INCREMENTAL_MAX_FILES = 60
+# admitting the full ZIP is the more efficient option. Below this
+# threshold we always go incremental; the per-file HTTP overhead
+# is irrelevant for a handful of files and we avoid the 86 MB
+# archive download.
+INCREMENTAL_MAX_FILES = 20
 
 
-def _pull_update_incremental(root: Path, from_sha: str) -> tuple:
+def _pull_update_incremental(
+        root: Path, from_sha: str, to_sha: str) -> tuple:
     """Try the diff-and-fetch update path. Returns
     (success, message, fall_through_to_zip).
+
+    `to_sha` is the SHA we're updating to - the caller supplied
+    it from the preceding update check, so we write it directly
+    into installed_version.txt instead of doing a second API
+    round-trip.
 
     fall_through_to_zip=True means 'I couldn't do this safely,
     caller should retry with the full ZIP'. fall_through=False
@@ -522,25 +396,6 @@ def _pull_update_incremental(root: Path, from_sha: str) -> tuple:
         return (False, "", True)  # fall through
 
     files = cmp_data.get("files") or []
-    head_sha = cmp_data.get("merge_base_commit", {}).get(
-        "sha", "") or cmp_data.get("commits", [{}])[-1].get(
-        "sha", "")
-    # Actually, the head of the comparison is in the top-level
-    # commits[-1] (last one in the range). But the SHA we want
-    # to record is the branch tip - cmp_data also gives that as
-    # the URL parameter; grab it from the response too.
-    head_sha = ""
-    try:
-        # GitHub returns the merge_base, base_commit, and
-        # commits[]. The "ahead by N" commit at index N-1 is the
-        # tip we just compared to. If commits is empty, branch
-        # tip == from_sha (no update).
-        cmts = cmp_data.get("commits") or []
-        if cmts:
-            head_sha = cmts[-1].get("sha", "")
-    except Exception:
-        pass
-
     if cmp_data.get("status") == "identical" \
             or cmp_data.get("ahead_by", 0) == 0:
         return (True,
@@ -667,15 +522,16 @@ def _pull_update_incremental(root: Path, from_sha: str) -> tuple:
         except Exception as e:
             skipped_error.append(f"{dest_rel}: {e}")
 
-    # 4) Record the new SHA so the next check can short-circuit.
-    if head_sha:
-        try:
-            cfg_dir = root / "config"
-            cfg_dir.mkdir(parents=True, exist_ok=True)
-            (cfg_dir / "installed_version.txt").write_text(
-                head_sha + "\n", encoding="utf-8")
-        except Exception:
-            pass
+    # 4) Record the new SHA so the next check has a reference.
+    version_write_error = ""
+    try:
+        _write_installed_version(root, to_sha)
+    except Exception as e:
+        version_write_error = (
+            "WARNING: could not write installed_version.txt "
+            "(%s). The update was applied but Quopus won't "
+            "be able to detect the next update without this "
+            "file." % e)
 
     # 5) Build report.
     lines = [
@@ -704,6 +560,14 @@ def _pull_update_incremental(root: Path, from_sha: str) -> tuple:
     if copied or removed or renamed:
         lines.append("")
         lines.append(f"Backup: {backup_dir}")
+        lines.append("")
+        if version_write_error:
+            lines.append(version_write_error)
+        else:
+            lines.append(
+                f"Registered installed version: {to_sha[:7]}  "
+                f"(config/installed_version.txt)")
+        lines.append("")
         lines.append("Restart Quopus to load the new code.")
     return (True, "\n".join(lines), False)
 
@@ -716,10 +580,12 @@ def _raw_url(path: str) -> str:
             f"{REPO_OWNER}/{REPO_NAME}/{DEFAULT_BRANCH}/{path}")
 
 
-def _pull_update_zip(root: Path) -> tuple:
-    """Original full-archive update path. Used as the fallback for
-    cases where the incremental path can't determine the right set
-    of changes (no from_sha, huge diff, force-push, ...)."""
+def _pull_update_zip(root: Path, to_sha: str) -> tuple:
+    """Full-archive update path. Used as the fallback for cases
+    where the incremental path can't determine the right set of
+    changes (no from_sha, huge diff, force-push, ...). `to_sha`
+    is recorded into installed_version.txt at the end so the next
+    check has a reference point."""
     from datetime import datetime
     import tempfile, zipfile, shutil
 
@@ -843,15 +709,24 @@ def _pull_update_zip(root: Path) -> tuple:
             msg_lines.append("")
             msg_lines.append(
                 f"Backup of replaced files: {backup_dir}")
+            # Record installed version. Surface failure in the
+            # message so it's visible if Quopus can't write to
+            # config/ (read-only install, missing permission).
             msg_lines.append("")
-            msg_lines.append(
-                "Restart Quopus to load the new code.")
-            # Note the new SHA so the next check knows what's
-            # installed even without a .git directory.
             try:
-                _write_installed_version(root)
-            except Exception:
-                pass
+                _write_installed_version(root, to_sha)
+                msg_lines.append(
+                    f"Registered installed version: "
+                    f"{to_sha[:7]}  "
+                    f"(config/installed_version.txt)")
+            except Exception as e:
+                msg_lines.append(
+                    "WARNING: could not write "
+                    "installed_version.txt (%s). The update "
+                    "was applied but the next check won't "
+                    "know what's installed." % e)
+            msg_lines.append("")
+            msg_lines.append("Restart Quopus to load the new code.")
 
         success = copied > 0 or unchanged > 0
         return (success, "\n".join(msg_lines))
@@ -862,25 +737,18 @@ def _pull_update_zip(root: Path) -> tuple:
             pass
 
 
-def _write_installed_version(repo_root: Path) -> None:
-    """Persist the latest remote SHA into config/installed_version.txt
-    so the next update check can compare even on installations
-    without a .git directory (ZIP-only deployments)."""
-    try:
-        req = Request(API_URL, headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": HTTP_USER_AGENT})
-        with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            sha = json.loads(
-                resp.read().decode("utf-8")).get("sha", "")
-        if not sha:
-            return
-        cfg_dir = repo_root / "config"
-        cfg_dir.mkdir(parents=True, exist_ok=True)
-        (cfg_dir / "installed_version.txt").write_text(
-            sha + "\n", encoding="utf-8")
-    except Exception:
-        pass
+def _write_installed_version(repo_root: Path, sha: str) -> None:
+    """Persist `sha` into config/installed_version.txt so the
+    next update check can compare against it. Raises on failure
+    so the caller can surface a clear error message instead of
+    silently dropping the write."""
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", sha or ""):
+        raise ValueError("Refusing to write malformed SHA: %r"
+                         % (sha,))
+    cfg_dir = repo_root / "config"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    target = cfg_dir / "installed_version.txt"
+    target.write_text(sha + "\n", encoding="utf-8")
 
 
 # ------------------------------------------------------------------
@@ -913,17 +781,21 @@ try:
         Tries the incremental file-by-file path first when
         `from_sha` is known, falls back to the full ZIP archive
         otherwise (or when the incremental path can't safely apply
-        the changes)."""
+        the changes). `to_sha` is the destination commit and is
+        recorded into installed_version.txt at the end."""
         done = pyqtSignal(bool, str)
 
-        def __init__(self, repo_root: str, from_sha: str = ""):
+        def __init__(self, repo_root: str,
+                     from_sha: str = "", to_sha: str = ""):
             super().__init__()
             self._root = repo_root
             self._from_sha = from_sha or ""
+            self._to_sha = to_sha or ""
 
         def run(self):
             ok, msg = pull_update(self._root,
-                                  from_sha=self._from_sha)
+                                  from_sha=self._from_sha,
+                                  to_sha=self._to_sha)
             self.done.emit(ok, msg)
 
     def start_background_check(
@@ -933,8 +805,8 @@ try:
         """Spin up a thread + worker, run the check, deliver the
         result to `callback`. If known_remote_sha is non-empty and
         still matches the remote tip, the worker returns almost
-        immediately without a git fetch - the fast path for the
-        common 'nothing changed since last visit' case.
+        immediately - the fast path for the common 'nothing
+        changed since last visit' case.
 
         Returns (thread, worker) which the caller must keep
         references to until the thread quits - otherwise they get
@@ -957,12 +829,20 @@ try:
             parent: Optional[QObject],
             repo_root: str,
             callback: Callable,
-            from_sha: str = "") -> tuple:
-        """Run the update install in a worker thread. If from_sha
-        is provided the worker can attempt the incremental diff
-        path (way faster for small updates)."""
+            from_sha: str = "",
+            to_sha: str = "") -> tuple:
+        """Run the update install in a worker thread.
+
+          from_sha - the SHA we're updating from. When known, the
+              worker tries the incremental diff path (a few KB)
+              before falling back to the full ZIP archive.
+          to_sha - the SHA we're updating to. Recorded into
+              installed_version.txt at the end so the next check
+              has a reference. Caller normally has this from the
+              preceding update check; pass it through."""
         thread = QThread(parent)
-        worker = UpdatePullWorker(repo_root, from_sha=from_sha)
+        worker = UpdatePullWorker(
+            repo_root, from_sha=from_sha, to_sha=to_sha)
         worker.moveToThread(thread)
         thread.started.connect(worker.run)
         worker.done.connect(callback)

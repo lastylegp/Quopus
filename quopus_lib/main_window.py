@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 17:08
+# date_time: 2026-06-03 17:54
 """
 Main window layout:
 
@@ -219,10 +219,12 @@ class QuopusMain(QMainWindow):
         # window has settled. Runs in a background thread so a slow
         # or unreachable network can never block startup. The check
         # updates self.lbl_status with a small splash, then either
-        # restores "Ready" or pops up the update dialog.
+        # restores "Ready" or pops up the update dialog. The 2-sec
+        # delay gives the startup splash/logo time to fade out so
+        # the update dialog isn't hidden behind it when it appears.
         self._update_thread = None
         self._update_worker = None
-        QTimer.singleShot(800, self._start_update_check)
+        QTimer.singleShot(2000, self._start_update_check)
 
         self.left_lister.set_active(True)
         self.right_lister.set_active(False)
@@ -2588,28 +2590,46 @@ class QuopusMain(QMainWindow):
         # Decide whether to notify. A notification means: the
         # remote tip is in a state the user hasn't acknowledged
         # yet. Two situations qualify:
-        #   1) local is behind remote (genuine pull-needed update)
+        #   1) local is behind remote (genuine pull-needed update,
+        #      and also when local is empty - we have no proof of
+        #      what's installed, so default to 'show the dialog')
         #   2) the remote SHA has changed since we last showed
         #      a dialog (could be the user's own push, could be
         #      a contributor's commit that they then pulled
         #      manually - either way it's news worth showing)
-        # On a brand-new install (no last_seen), don't fire a
-        # popup - the user hasn't asked for it, just record the
-        # SHA silently. Same for first_run_init: the checker just
-        # auto-registered the current remote SHA as 'installed'
-        # because there was no .git or installed_version.txt; the
-        # 'is_update_available' flag is False as a consequence,
-        # so nothing to show.
         notify = (info.is_update_available
                   or (sha_moved and not first_time))
-        if getattr(info, "first_run_init", False):
+        # Manual Help -> Check for updates ALWAYS shows the full
+        # dialog, even when there's nothing to pull. The user
+        # explicitly asked for the check; showing a confirmation
+        # window (with the same checkbox as the auto-startup
+        # version, and the 'Update now' button disabled when
+        # already synced) is exactly what they want.
+        if manual:
+            notify = True
+
+        # First-run init: the checker just wrote
+        # installed_version.txt with the current remote SHA on
+        # behalf of a brand-new user. There's no real update to
+        # apply - we're aligning local with remote silently. Skip
+        # the dialog entirely. Manual check still shows the
+        # window so the user can see "you're on commit XXX".
+        if getattr(info, "first_run_init", False) and not manual:
             notify = False
 
-        # Snooze: when the auto-startup check produces the same
-        # SHA we already popped for last time, stay quiet. Manual
-        # Help -> Check for updates bypasses the snooze.
+        # Snooze: only applies to the silent auto-startup check.
+        # If the user already saw the dialog for this SHA last
+        # time, don't pop it again on its own - they can still
+        # invoke Help -> Check for updates to see it.
+        # IMPORTANT: snooze only kicks in when local_sha is
+        # actually registered (installed_version.txt exists).
+        # If local_sha is empty, the user has never completed an
+        # update - keep showing the dialog at every startup so
+        # they get prompted to actually register a version,
+        # regardless of what last_seen_sha says.
         if not manual and last_seen \
-                and last_seen == info.latest_sha:
+                and last_seen == info.latest_sha \
+                and info.local_sha:
             notify = False
 
         # Persist the SHA we've now seen - covers both branches
@@ -2622,23 +2642,16 @@ class QuopusMain(QMainWindow):
                 pass
 
         if not notify:
-            # Nothing newsworthy - just refresh the status bar
-            # and let it fade back to Ready.
+            # Auto-startup check, nothing new - just refresh the
+            # status bar and let it fade back to Ready. (Manual
+            # path never lands here because we forced notify=True
+            # above.)
             sha = info.local_sha[:7] if info.local_sha \
                 else info.latest_commit_short or "?"
             subj = (info.latest_commit_message or "").splitlines()
             subj = subj[0] if subj else ""
             if len(subj) > 50:
                 subj = subj[:47] + "..."
-            if manual:
-                # User asked explicitly - confirm in a popup.
-                QMessageBox.information(
-                    self, "Up to date",
-                    "You're on the latest commit:\n\n"
-                    "  %s  %s\n"
-                    "  %s"
-                    % (sha, subj or "(no message)",
-                       info.latest_commit_date or ""))
             if subj:
                 self.lbl_status.setText(
                     " Up to date - commit %s '%s' "
@@ -2663,6 +2676,7 @@ class QuopusMain(QMainWindow):
                    "" if info.commits_behind == 1 else "s"))
         else:
             self.lbl_status.setText(
+                " Up to date " if not sha_moved else
                 " [NEW] New commit on GitHub (already in sync) ")
         self._show_update_dialog(info)
 
@@ -2676,11 +2690,18 @@ class QuopusMain(QMainWindow):
             QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
             QTextBrowser, QDialogButtonBox, QMessageBox, QCheckBox)
         from PyQt6.QtGui import QDesktopServices
-        from PyQt6.QtCore import QUrl
+        from PyQt6.QtCore import QUrl, Qt
 
         dlg = QDialog(self)
         dlg.setWindowTitle("Quopus update available")
         dlg.resize(560, 400)
+        # Force the dialog above startup splash / loading overlays
+        # that some setups stack on top of the main window during
+        # the first seconds after launch. Without this hint the
+        # modal sometimes opens hidden behind the splash, which
+        # looks like 'nothing happened' to the user. Combined with
+        # raise_() + activateWindow() below it guarantees focus.
+        dlg.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         v = QVBoxLayout(dlg)
         title = QLabel(
             "<b>A new Quopus version is available on GitHub.</b>")
@@ -2697,14 +2718,13 @@ class QuopusMain(QMainWindow):
                           and info.latest_sha
                           and info.local_sha == info.latest_sha)
         if already_synced:
-            dlg.setWindowTitle("New commit on GitHub")
+            dlg.setWindowTitle("Quopus is up to date")
             title.setText(
-                "<b>Quopus noticed a new commit on "
-                "GitHub.</b><br>"
-                "Your local copy is already on this commit, "
-                "nothing to pull.")
+                "<b>Quopus is up to date.</b><br>"
+                "Your local copy matches the remote tip - "
+                "there's nothing to pull right now.")
         local_short = info.local_sha[:7] if info.local_sha \
-            else "(unknown)"
+            else "(not recorded yet - click 'Update now' to register)"
         if already_synced:
             commits_msg = ("Your local HEAD matches the remote "
                            "tip - this is a notification, not "
@@ -2717,7 +2737,8 @@ class QuopusMain(QMainWindow):
                 if info.commits_behind else
                 "Remote tip differs from your local copy.")
         method_note = (
-            "Checked via local git." if info.method == "git"
+            "Checked via GitHub API (cached)."
+            if info.method == "cache"
             else "Checked via GitHub API.")
         import html as _html_mod
         details.setHtml(
@@ -2786,8 +2807,11 @@ class QuopusMain(QMainWindow):
         # which files changed, and just download those - typically
         # a few KB instead of the 86 MB full archive. The pull
         # worker falls back to the full ZIP automatically if the
-        # compare path can't be used safely.
+        # compare path can't be used safely. We pass info.latest_sha
+        # as the destination so the worker can record it into
+        # installed_version.txt without doing another API round.
         from_sha = info.local_sha or ""
+        to_sha = info.latest_sha or ""
 
         def _do_pull():
             from .update_checker import start_background_pull
@@ -2810,7 +2834,7 @@ class QuopusMain(QMainWindow):
             dlg._pull_thread, dlg._pull_worker = \
                 start_background_pull(
                     dlg, repo_root, _done,
-                    from_sha=from_sha)
+                    from_sha=from_sha, to_sha=to_sha)
 
         def _open_github():
             from .update_checker import REPO_OWNER, REPO_NAME
@@ -2821,6 +2845,14 @@ class QuopusMain(QMainWindow):
         bt_pull.clicked.connect(_do_pull)
         bt_open.clicked.connect(_open_github)
         bt_later.clicked.connect(dlg.reject)
+        # Show first, then schedule a raise/activate after the
+        # event loop has had a tick to lay everything out -
+        # without the deferred call the splash/main-window can
+        # win the focus race on some Windows setups even with
+        # WindowStaysOnTopHint set.
+        dlg.show()
+        QTimer.singleShot(0, lambda: (
+            dlg.raise_(), dlg.activateWindow()))
         dlg.exec()
 
     def _update_stats(self):
