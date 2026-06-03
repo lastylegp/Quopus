@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:15
+# date_time: 2026-06-03 18:22
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local installation is behind the
@@ -699,14 +699,28 @@ def _pull_update_tree_diff(
         return bool(parts) and (parts[0] in protect
                                 or "__pycache__" in parts)
 
-    def _git_blob_sha(filepath: Path) -> str:
-        """git's blob SHA-1: sha1('blob {size}\\0' + content)."""
+    def _git_blob_sha_variants(filepath: Path):
+        """Return (raw_sha, eol_normalized_sha) for the file.
+        GitHub stores files with LF line endings and computes
+        its blob SHA over that LF form. On Windows installs the
+        local file is often CRLF, which gives a different raw
+        hash even though the content is logically identical -
+        so we always compute both and the caller accepts a match
+        on either side. For binary files (no CRLF present) both
+        values are identical, no harm done."""
         try:
             content = filepath.read_bytes()
         except Exception:
-            return ""
-        header = ("blob %d\0" % len(content)).encode("ascii")
-        return hashlib.sha1(header + content).hexdigest()
+            return ("", "")
+        raw_header = ("blob %d\0" % len(content)).encode("ascii")
+        raw_sha = hashlib.sha1(raw_header + content).hexdigest()
+        if b"\r\n" in content:
+            norm = content.replace(b"\r\n", b"\n")
+            norm_header = ("blob %d\0" % len(norm)).encode("ascii")
+            norm_sha = hashlib.sha1(
+                norm_header + norm).hexdigest()
+            return (raw_sha, norm_sha)
+        return (raw_sha, raw_sha)
 
     _report("Comparing local files...")
     plan = []  # list of (path, remote_blob_sha)
@@ -721,7 +735,11 @@ def _pull_update_tree_diff(
         if not local_file.is_file():
             plan.append((path, remote_sha))
             continue
-        if _git_blob_sha(local_file) != remote_sha:
+        raw_sha, norm_sha = _git_blob_sha_variants(local_file)
+        # Match on either: handles Windows CRLF locals vs the LF
+        # blob GitHub stores. If neither matches, the file is
+        # genuinely different and gets queued for download.
+        if remote_sha != raw_sha and remote_sha != norm_sha:
             plan.append((path, remote_sha))
 
     if not plan:
