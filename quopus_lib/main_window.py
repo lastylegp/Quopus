@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:07
+# date_time: 2026-06-03 18:36
 """
 Main window layout:
 
@@ -1855,20 +1855,29 @@ class QuopusMain(QMainWindow):
         # Help menu - lives at the very end so it sits on the right
         # like in most desktop apps.
         help_menu = mb.addMenu("Help")
-        act_check = help_menu.addAction("Check for updates")
-        act_check.triggered.connect(
-            lambda: self._start_update_check(manual=True))
-        # Checkable toggle: auto-check on startup. Stays in sync
-        # with config["update_check_enabled"]; the check on Help
-        # -> Check for updates is unaffected (always works).
-        self._act_autocheck = help_menu.addAction(
-            "Check for updates at startup")
-        self._act_autocheck.setCheckable(True)
-        self._act_autocheck.setChecked(
-            bool(self.config.get("update_check_enabled", True)))
-        self._act_autocheck.toggled.connect(
-            self._on_toggle_autocheck)
-        help_menu.addSeparator()
+        # Skip the update entries when running as a frozen .exe -
+        # see _start_update_check for the rationale. The user
+        # still gets the About dialog so the menu isn't empty.
+        import sys as _sys
+        _frozen = getattr(_sys, "frozen", False)
+        if not _frozen:
+            act_check = help_menu.addAction("Check for updates")
+            act_check.triggered.connect(
+                lambda: self._start_update_check(manual=True))
+            # Checkable toggle: auto-check on startup. Stays in
+            # sync with config["update_check_enabled"]; Help ->
+            # Check for updates is unaffected (always works).
+            self._act_autocheck = help_menu.addAction(
+                "Check for updates at startup")
+            self._act_autocheck.setCheckable(True)
+            self._act_autocheck.setChecked(
+                bool(self.config.get(
+                    "update_check_enabled", True)))
+            self._act_autocheck.toggled.connect(
+                self._on_toggle_autocheck)
+            help_menu.addSeparator()
+        else:
+            self._act_autocheck = None
         act_about = help_menu.addAction("About Quopus")
         act_about.triggered.connect(self._show_about)
 
@@ -2516,7 +2525,31 @@ class QuopusMain(QMainWindow):
         config["update_check_enabled"]: when False (e.g. offline
         installs, restricted networks), startup stays quiet. The
         manual Help -> Check menu entry bypasses the toggle so the
-        user can always check explicitly if they want to."""
+        user can always check explicitly if they want to.
+
+        Frozen (PyInstaller .exe) builds skip the check entirely -
+        their files live inside a single bundled executable and
+        can't be patched in place, so any 'update available' would
+        be a dead end for the user."""
+        # Frozen / standalone EXE: never check. The .exe wraps a
+        # snapshot of the source tree at build time; the
+        # update_checker would happily report a newer commit on
+        # GitHub but pull_update has no individual files on disk
+        # to write to. Better to skip silently and let the user
+        # download a fresh installer.
+        import sys
+        if getattr(sys, "frozen", False):
+            if manual:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, "Updates",
+                    "Quopus is running as a standalone build "
+                    "(.exe).\n\n"
+                    "In-app updates are only supported in the "
+                    "Python-source install. To upgrade this "
+                    "build, download the latest installer from "
+                    "GitHub.")
+            return
         if not manual and not self.config.get(
                 "update_check_enabled", True):
             # Silenced by user preference - nothing to do.
@@ -2828,27 +2861,42 @@ class QuopusMain(QMainWindow):
             bt_pull.setEnabled(False)
             bt_pull.setText("Pulling...")
             self.lbl_status.setText(" Starting update... ")
-            # Live progress label inside the dialog - more visible
-            # than only the status bar at the bottom of the main
-            # window.
-            from PyQt6.QtWidgets import QLabel
+            # Live progress label + bar inside the dialog - more
+            # visible than only the status bar at the bottom of
+            # the main window.
+            from PyQt6.QtWidgets import QLabel, QProgressBar
             progress_label = QLabel("Starting update...")
             progress_label.setStyleSheet(
                 "color: #555; font-style: italic;")
+            progress_bar = QProgressBar()
+            progress_bar.setRange(0, 100)
+            progress_bar.setValue(0)
+            progress_bar.setTextVisible(True)
             v.addWidget(progress_label)
+            v.addWidget(progress_bar)
+
+            # Match "47%/100" anywhere in the stage label and
+            # pull the percent out for the bar. The update code
+            # in update_checker.py emits exactly this format so
+            # both the bar and the text stay in sync.
+            import re as _re
+            _pct_re = _re.compile(r"(\d{1,3})%/100")
 
             def _on_progress(stage: str):
-                # Both the dialog label and the main status bar
-                # get the stage label - the user sees something
-                # change every second so the UI never looks dead.
                 progress_label.setText(stage)
-                # Status bar truncates long text fine.
                 self.lbl_status.setText(" " + stage[:80] + " ")
+                m = _pct_re.search(stage)
+                if m:
+                    try:
+                        progress_bar.setValue(int(m.group(1)))
+                    except ValueError:
+                        pass
 
             def _done(ok, msg):
                 self.lbl_status.setText(
                     " Ready " if ok else " Update failed ")
                 if ok:
+                    progress_bar.setValue(100)
                     QMessageBox.information(
                         dlg, "Update complete", msg)
                     dlg.accept()
