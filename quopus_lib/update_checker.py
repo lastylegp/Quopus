@@ -1,6 +1,5 @@
-# date_time: 2026-06-03 16:25
+# date_time: 2026-06-03 16:39
 """GitHub update checker for Quopus Commander.
-update test
 
 Checks at startup whether the local working copy is behind the
 remote main branch on GitHub, and offers to pull the latest changes
@@ -304,25 +303,41 @@ def _check_via_api(repo_root: Optional[Path]) -> UpdateInfo:
 # ------------------------------------------------------------------
 # Public entry points
 # ------------------------------------------------------------------
-def _quick_remote_sha() -> Optional[str]:
-    """A very lightweight 'what's the current remote SHA?' probe.
-    Just hits the commits endpoint and reads the top-level `sha`
-    field. Used to short-circuit the full check when the user has
-    already seen this exact commit (config['update_last_seen_sha'])
-    or already has it installed. Avoids the heavy `git fetch` step
-    in the common 'nothing changed' case, which would otherwise
-    download every new pack-object on the branch."""
+def _quick_remote_info() -> Optional[dict]:
+    """Lightweight 'what's the current remote tip?' probe. Hits
+    the same /commits endpoint as the full check but doesn't do
+    any local git work afterwards. The commit message and date
+    are virtually free (same JSON response), so we pull them too
+    and pass them through - that way the cache-hit path can still
+    display a meaningful 'Up to date - commit XXX <subject>' line
+    instead of just the SHA."""
     try:
         req = Request(API_URL, headers={
             "Accept": "application/vnd.github+json",
             "User-Agent": HTTP_USER_AGENT,
         })
         with urlopen(req, timeout=HTTP_TIMEOUT) as resp:
-            sha = json.loads(
-                resp.read().decode("utf-8")).get("sha", "")
-        return sha or None
+            data = json.loads(resp.read().decode("utf-8"))
+        sha = data.get("sha", "") or ""
+        if not sha:
+            return None
+        commit = data.get("commit", {}) or {}
+        return {
+            "sha": sha,
+            "message": (commit.get("message", "")
+                        or "").splitlines()[0]
+                if commit.get("message") else "",
+            "date": (commit.get("author", {}) or {})
+                .get("date", "") or "",
+        }
     except Exception:
         return None
+
+
+def _quick_remote_sha() -> Optional[str]:
+    """Compatibility shim - just the SHA from _quick_remote_info."""
+    info = _quick_remote_info()
+    return info["sha"] if info else None
 
 
 def check_for_updates(
@@ -350,8 +365,10 @@ def check_for_updates(
     # if the branch tip hasn't moved, we can stop here without
     # doing a fetch or pulling commit metadata.
     if known_remote_sha:
-        current = _quick_remote_sha()
-        if current is not None and current == known_remote_sha:
+        rinfo = _quick_remote_info()
+        if rinfo is not None \
+                and rinfo["sha"] == known_remote_sha:
+            current = rinfo["sha"]
             local = _read_local_sha(repo_root) or ""
             return UpdateInfo(
                 ok=True,
@@ -360,6 +377,8 @@ def check_for_updates(
                 local_sha=local,
                 latest_sha=current,
                 latest_commit_short=current[:7],
+                latest_commit_message=rinfo["message"],
+                latest_commit_date=rinfo["date"],
                 repo_root=str(repo_root),
                 method="cache",
                 # Mirror the count from previous runs as best-effort

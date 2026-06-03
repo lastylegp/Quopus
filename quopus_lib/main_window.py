@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 13:09
+# date_time: 2026-06-03 16:39
 """
 Main window layout:
 
@@ -2555,7 +2555,17 @@ class QuopusMain(QMainWindow):
         """Worker reported back. Update the status bar and, if a
         new commit is available, pop the update dialog. On failure
         we stay quiet unless the user explicitly asked us to check
-        (manual=True from the Help menu)."""
+        (manual=True from the Help menu).
+
+        The status bar shows commit + subject when available, and
+        marks the result with [NEW] when the remote tip has moved
+        since the previous Quopus start. That [NEW] tag fires for
+        both 'there's an update to pull' and 'a commit was just
+        pushed and is now my local HEAD too' - so a developer who
+        just pushed something sees clear feedback that Quopus
+        noticed."""
+        from PyQt6.QtWidgets import QMessageBox
+        from PyQt6.QtCore import QTimer
         manual = getattr(self, "_update_manual", False)
         # Drop our thread references - Qt's deleteLater chain takes
         # care of the actual cleanup. Doing this here means the
@@ -2565,53 +2575,87 @@ class QuopusMain(QMainWindow):
 
         if not info.ok:
             if manual:
-                from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(
                     self, "Update check failed",
                     "Couldn't check for updates:\n\n" + info.error)
             self.lbl_status.setText(" Ready ")
             return
+
+        # Did the remote SHA move since the previous run? This is
+        # how we tell "Quopus actually saw your push" apart from
+        # "nothing has happened on the branch". The check happens
+        # BEFORE we update last_seen_sha further down.
+        last_seen = self.config.get(
+            "update_last_seen_sha", "") or ""
+        sha_moved_since_last_start = bool(
+            info.latest_sha
+            and last_seen
+            and info.latest_sha != last_seen)
+        # The very first run after install also counts as "new" -
+        # we have nothing to compare against, but the user has
+        # never seen this commit hashed by Quopus before.
+        first_time = (not last_seen) and bool(info.latest_sha)
+
         if not info.is_update_available:
-            self.lbl_status.setText(
-                " Up to date (commit %s) "
-                % (info.local_sha[:7] if info.local_sha
-                   else info.latest_commit_short or "?"))
+            sha = info.local_sha[:7] if info.local_sha \
+                else info.latest_commit_short or "?"
+            # Include the commit subject when we have it (the
+            # cache fast-path doesn't fetch metadata, so this may
+            # be empty - that's fine, we just show the SHA).
+            subj = (info.latest_commit_message or "").splitlines()
+            subj = subj[0] if subj else ""
+            if len(subj) > 50:
+                subj = subj[:47] + "..."
+            marker = "[NEW] " if (sha_moved_since_last_start
+                                  or first_time) else ""
+            if subj:
+                text = " %sUp to date - commit %s '%s' " \
+                    % (marker, sha, subj)
+            else:
+                text = " %sUp to date (commit %s) " \
+                    % (marker, sha)
+            self.lbl_status.setText(text)
             if manual:
-                from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.information(
                     self, "Up to date",
                     "You're on the latest commit:\n\n"
                     "  %s  %s\n"
                     "  %s"
-                    % (info.local_sha[:7] or info.latest_commit_short,
+                    % (sha,
                        info.latest_commit_message
                        or "(no message)",
                        info.latest_commit_date or ""))
-            # Reset the status line back to plain "Ready" after a
-            # few seconds so the bar isn't permanently labelled with
-            # the commit hash.
+            # Remember the SHA so the *next* check can tell when
+            # things have moved (this is the bit that was missing
+            # before - we only updated last_seen when the update
+            # dialog appeared, so a developer's own push was
+            # never recorded).
+            if info.latest_sha:
+                self.config["update_last_seen_sha"] = \
+                    info.latest_sha
+                try:
+                    save_config(self.config)
+                except Exception:
+                    pass
+            # Reset to "Ready" after a few seconds so the bar
+            # isn't permanently labelled with the commit hash.
             try:
-                from PyQt6.QtCore import QTimer
                 QTimer.singleShot(
-                    5000, lambda: self.lbl_status.setText(" Ready "))
+                    5000,
+                    lambda: self.lbl_status.setText(" Ready "))
             except Exception:
                 pass
             return
+
         # Update available. Did the user already see this exact
         # commit on a previous run? If so and this is the silent
         # startup check (not Help -> Check for updates), don't
         # nag them again - they've already snoozed it.
-        last_seen = self.config.get(
-            "update_last_seen_sha", "") or ""
         if not manual and last_seen \
                 and last_seen == info.latest_sha:
-            # Briefly hint that an update is sitting there, then
-            # let the status bar go back to Ready. The user can
-            # still trigger the dialog manually from Help.
             self.lbl_status.setText(
                 " Update pending (Help -> Check for updates) ")
             try:
-                from PyQt6.QtCore import QTimer
                 QTimer.singleShot(
                     5000,
                     lambda: self.lbl_status.setText(" Ready "))
@@ -2620,7 +2664,7 @@ class QuopusMain(QMainWindow):
             return
         # Brand new commit (or user explicitly asked) - show dialog.
         self.lbl_status.setText(
-            " New version available (%d commit%s behind) "
+            " [NEW] Version available (%d commit%s behind) "
             % (info.commits_behind,
                "" if info.commits_behind == 1 else "s"))
         self._show_update_dialog(info)
