@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 17:54
+# date_time: 2026-06-03 18:07
 """
 Main window layout:
 
@@ -2621,15 +2621,16 @@ class QuopusMain(QMainWindow):
         # If the user already saw the dialog for this SHA last
         # time, don't pop it again on its own - they can still
         # invoke Help -> Check for updates to see it.
-        # IMPORTANT: snooze only kicks in when local_sha is
-        # actually registered (installed_version.txt exists).
-        # If local_sha is empty, the user has never completed an
-        # update - keep showing the dialog at every startup so
-        # they get prompted to actually register a version,
-        # regardless of what last_seen_sha says.
+        #
+        # CRITICAL: snooze ONLY kicks in when local and remote
+        # actually match. When local is behind remote there's a
+        # real update pending - the user has actual work to do
+        # and we must not swallow the dialog, no matter what
+        # last_seen_sha says.
         if not manual and last_seen \
                 and last_seen == info.latest_sha \
-                and info.local_sha:
+                and info.local_sha \
+                and info.local_sha == info.latest_sha:
             notify = False
 
         # Persist the SHA we've now seen - covers both branches
@@ -2723,8 +2724,6 @@ class QuopusMain(QMainWindow):
                 "<b>Quopus is up to date.</b><br>"
                 "Your local copy matches the remote tip - "
                 "there's nothing to pull right now.")
-        local_short = info.local_sha[:7] if info.local_sha \
-            else "(not recorded yet - click 'Update now' to register)"
         if already_synced:
             commits_msg = ("Your local HEAD matches the remote "
                            "tip - this is a notification, not "
@@ -2740,15 +2739,26 @@ class QuopusMain(QMainWindow):
             "Checked via GitHub API (cached)."
             if info.method == "cache"
             else "Checked via GitHub API.")
+        # Show the FULL 40-char SHA values so the user can verify
+        # by eye what's being compared - the short 7-char form is
+        # only convenient shorthand, the actual equality check
+        # happens on the complete hash.
+        local_full = info.local_sha or \
+            "(not recorded yet - click 'Update now' to register)"
+        latest_full = info.latest_sha or "(unknown)"
         import html as _html_mod
         details.setHtml(
             f"<p>{commits_msg}</p>"
-            f"<p><b>Latest commit:</b><br>"
-            f"&nbsp;&nbsp;<code>{info.latest_commit_short}</code> "
+            f"<p><b>Latest commit on GitHub:</b><br>"
+            f"&nbsp;&nbsp;<code style='font-size:10pt;'>"
+            f"{latest_full}</code><br>"
+            f"&nbsp;&nbsp;"
             f"{_html_mod.escape(info.latest_commit_message)}<br>"
             f"&nbsp;&nbsp;<i>{info.latest_commit_date}</i></p>"
-            f"<p><b>Your local HEAD:</b> "
-            f"<code>{local_short}</code></p>"
+            f"<p><b>Your installed version "
+            f"(config/installed_version.txt):</b><br>"
+            f"&nbsp;&nbsp;<code style='font-size:10pt;'>"
+            f"{local_full}</code></p>"
             f"<p style='color:#666;'>{method_note}<br>"
             f"Repository path: {info.repo_root}</p>")
         v.addWidget(details, 1)
@@ -2817,7 +2827,23 @@ class QuopusMain(QMainWindow):
             from .update_checker import start_background_pull
             bt_pull.setEnabled(False)
             bt_pull.setText("Pulling...")
-            self.lbl_status.setText(" Pulling updates from GitHub... ")
+            self.lbl_status.setText(" Starting update... ")
+            # Live progress label inside the dialog - more visible
+            # than only the status bar at the bottom of the main
+            # window.
+            from PyQt6.QtWidgets import QLabel
+            progress_label = QLabel("Starting update...")
+            progress_label.setStyleSheet(
+                "color: #555; font-style: italic;")
+            v.addWidget(progress_label)
+
+            def _on_progress(stage: str):
+                # Both the dialog label and the main status bar
+                # get the stage label - the user sees something
+                # change every second so the UI never looks dead.
+                progress_label.setText(stage)
+                # Status bar truncates long text fine.
+                self.lbl_status.setText(" " + stage[:80] + " ")
 
             def _done(ok, msg):
                 self.lbl_status.setText(
@@ -2831,10 +2857,14 @@ class QuopusMain(QMainWindow):
                         dlg, "Update failed", msg)
                     bt_pull.setEnabled(True)
                     bt_pull.setText("Update now")
+                    progress_label.setText(
+                        "Update failed - see message above.")
             dlg._pull_thread, dlg._pull_worker = \
                 start_background_pull(
                     dlg, repo_root, _done,
                     from_sha=from_sha, to_sha=to_sha)
+            # Wire the worker's progress signal to the label.
+            dlg._pull_worker.progress.connect(_on_progress)
 
         def _open_github():
             from .update_checker import REPO_OWNER, REPO_NAME

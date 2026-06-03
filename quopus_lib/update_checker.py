@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 17:48
+# date_time: 2026-06-03 18:15
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local installation is behind the
@@ -293,30 +293,58 @@ def check_for_updates(
 
 
 def pull_update(repo_root: str, from_sha: str = "",
-                to_sha: str = "") -> tuple:
+                to_sha: str = "",
+                progress_cb: Optional[Callable] = None) -> tuple:
     """Apply the latest version from GitHub. Returns (success, msg).
 
-    Two strategies are tried in order:
+    `progress_cb`, when provided, is invoked with a short status
+    string at each phase of the operation ('Checking diff...',
+    'Downloading file 3/12...', 'Writing version file...'). The
+    worker hooks it up to the status bar so the user can see
+    what's happening - a multi-second per-file download stretch
+    without any feedback looks identical to a frozen UI.
 
-    1. **Incremental** (preferred when `from_sha` is known) - asks
-       GitHub's compare API which files changed between `from_sha`
-       and the branch tip, then downloads only those individual
-       files via raw.githubusercontent.com. Typical small commit
-       = a few KB instead of the ~86 MB full archive.
+    Two strategies are tried in order. The full-archive ZIP path
+    is intentionally NOT used; we always download individual
+    files so the user only pays for what actually changed.
 
-    2. **Full archive** - falls back to the branch ZIP when the
-       incremental path fails (no `from_sha`, compare API
-       unreachable, too many changed files, or the diff includes
-       a rename we don't have enough info to reconstruct safely).
+    1. **Compare API** (preferred, used when `from_sha` is in the
+       branch history) - asks GitHub's `compare` endpoint which
+       files changed between `from_sha` and the branch tip, then
+       downloads only those individual files via
+       raw.githubusercontent.com.
+
+    2. **Tree diff** (universal fallback) - lists every blob in
+       the remote tree, computes the git blob SHA-1 of each
+       corresponding local file, and downloads only the ones
+       where the hash differs (or files that don't exist locally).
+       Works without any `from_sha` reference, so it covers the
+       case where the local installation was set up from a ZIP
+       drop or someone manually edited installed_version.txt to
+       a SHA that's not on the branch.
 
     Both paths protect config/, cache/, .git/, _master2publish/
     and friends, and back up every overwritten file into
     `<repo>/.update_backup/<timestamp>/`. The destination SHA
     (`to_sha`) is recorded in `config/installed_version.txt` so
-    subsequent checks know what's installed. The caller normally
-    knows this SHA from the preceding update check; if they
-    pass an empty `to_sha` we probe the API for it ourselves.
+    subsequent checks know what's installed.
     """
+    def _report(stage: str) -> None:
+        """Push a stage label to the caller's progress callback,
+        and also echo it to stderr so it shows up in the console
+        log - handy when debugging update failures."""
+        try:
+            import sys
+            print("[update]", stage, file=sys.stderr, flush=True)
+        except Exception:
+            pass
+        if progress_cb is not None:
+            try:
+                progress_cb(stage)
+            except Exception:
+                pass
+
+    _report("Locating install root...")
     root = Path(repo_root)
     if not root.is_dir():
         return (False, "Repo root doesn't exist: " + repo_root)
@@ -325,6 +353,7 @@ def pull_update(repo_root: str, from_sha: str = "",
     # to record installed_version.txt at the end.
     if not to_sha or not re.fullmatch(
             r"[0-9a-fA-F]{40}", to_sha):
+        _report("Asking GitHub for the latest commit SHA...")
         rinfo = _quick_remote_info()
         if rinfo is not None:
             to_sha = rinfo["sha"]
@@ -333,15 +362,24 @@ def pull_update(repo_root: str, from_sha: str = "",
                 "Couldn't determine the target commit SHA from "
                 "GitHub. Check your network and try again.")
 
-    # Incremental path - only worth attempting when we know
-    # what we're updating from.
+    # Compare-API path. Only works when from_sha is reachable
+    # from the branch tip on GitHub. fall_through=True means
+    # 'compare endpoint returned 404 or didn't cover the range'
+    # - we move on to the tree-diff fallback instead of ZIP.
     if from_sha and re.fullmatch(r"[0-9a-fA-F]{40}", from_sha):
+        _report("Asking GitHub which files changed since "
+                + from_sha[:7] + "...")
         ok, msg, fall_through = _pull_update_incremental(
-            root, from_sha, to_sha)
+            root, from_sha, to_sha, _report)
         if not fall_through:
             return (ok, msg)
-        # else fall through to ZIP
-    return _pull_update_zip(root, to_sha)
+        _report("Compare API unusable for this from_sha - "
+                "switching to per-file tree diff...")
+    else:
+        _report("No usable from_sha - using per-file tree diff...")
+
+    # Universal per-file diff via the git/trees API.
+    return _pull_update_tree_diff(root, to_sha, _report)
 
 
 # How many changed files we're willing to fetch one-by-one before
@@ -353,14 +391,16 @@ INCREMENTAL_MAX_FILES = 20
 
 
 def _pull_update_incremental(
-        root: Path, from_sha: str, to_sha: str) -> tuple:
+        root: Path, from_sha: str, to_sha: str,
+        progress_cb: Optional[Callable] = None) -> tuple:
     """Try the diff-and-fetch update path. Returns
     (success, message, fall_through_to_zip).
 
     `to_sha` is the SHA we're updating to - the caller supplied
     it from the preceding update check, so we write it directly
     into installed_version.txt instead of doing a second API
-    round-trip.
+    round-trip. `progress_cb`, if given, gets phase labels for
+    the caller's status bar.
 
     fall_through_to_zip=True means 'I couldn't do this safely,
     caller should retry with the full ZIP'. fall_through=False
@@ -458,8 +498,22 @@ def _pull_update_incremental(
     copied = removed = renamed = 0
     skipped_locked = []
     skipped_error = []
+    total = len(plan)
 
-    for op, dest_rel, src_url, prev_rel in plan:
+    if progress_cb is not None:
+        try:
+            progress_cb(f"Incremental update: {total} file(s) "
+                        f"to apply")
+        except Exception:
+            pass
+
+    for idx, (op, dest_rel, src_url, prev_rel) in enumerate(
+            plan, start=1):
+        if progress_cb is not None:
+            try:
+                progress_cb(f"[{idx}/{total}] {op}: {dest_rel}")
+            except Exception:
+                pass
         dest = root / dest_rel
         try:
             if op == "write":
@@ -580,161 +634,194 @@ def _raw_url(path: str) -> str:
             f"{REPO_OWNER}/{REPO_NAME}/{DEFAULT_BRANCH}/{path}")
 
 
-def _pull_update_zip(root: Path, to_sha: str) -> tuple:
-    """Full-archive update path. Used as the fallback for cases
-    where the incremental path can't determine the right set of
-    changes (no from_sha, huge diff, force-push, ...). `to_sha`
-    is recorded into installed_version.txt at the end so the next
-    check has a reference point."""
+def _pull_update_tree_diff(
+        root: Path, to_sha: str,
+        progress_cb: Optional[Callable] = None) -> tuple:
+    """Universal per-file diff: list the entire remote tree on
+    the branch, compute the git-blob SHA-1 of each corresponding
+    local file, and download only the files that don't match.
+
+    No assumption about the local state - works even when the
+    user has no installed_version.txt at all, or has a SHA that
+    isn't on the branch (e.g. they manually edited the file, or
+    their old install never used Quopus's update tool).
+
+    Returns (success, message). Same protection set as the
+    compare-API path (config/, cache/, .git/, _master2publish,
+    backup tree, virtualenvs). Each overwritten file is backed
+    up to `<repo>/.update_backup/<timestamp>/`.
+    """
     from datetime import datetime
-    import tempfile, zipfile, shutil
+    import hashlib, shutil
 
-    archive_url = (
-        f"https://github.com/{REPO_OWNER}/{REPO_NAME}"
-        f"/archive/refs/heads/{DEFAULT_BRANCH}.zip")
+    def _report(stage: str) -> None:
+        if progress_cb is not None:
+            try:
+                progress_cb(stage)
+            except Exception:
+                pass
+        try:
+            import sys
+            print("[update]", stage, file=sys.stderr, flush=True)
+        except Exception:
+            pass
 
-    # 1. Download
+    # 1) Fetch the recursive tree listing
+    tree_url = (
+        f"https://api.github.com/repos/"
+        f"{REPO_OWNER}/{REPO_NAME}/git/trees/"
+        f"{DEFAULT_BRANCH}?recursive=1")
+    _report("Fetching file list from GitHub...")
     try:
-        req = Request(archive_url, headers={
+        req = Request(tree_url, headers={
+            "Accept": "application/vnd.github+json",
             "User-Agent": HTTP_USER_AGENT})
-        with urlopen(req, timeout=120) as r:
-            data = r.read()
+        with urlopen(req, timeout=30) as resp:
+            tree_data = json.loads(resp.read().decode("utf-8"))
     except HTTPError as e:
-        return (False,
-                f"GitHub returned HTTP {e.code} while downloading "
-                f"the update archive. Try again in a few minutes "
-                f"or open the GitHub page manually.")
+        return (False, f"Tree API HTTP {e.code}.")
     except URLError as e:
         return (False, f"Network error: {e.reason}")
     except Exception as e:
-        return (False, f"Download failed: {e}")
-    if not data or len(data) < 1024:
-        return (False, "Downloaded archive is empty or truncated.")
+        return (False, f"Could not fetch tree: {e}")
 
-    # 2. Extract to a temp folder
-    tmpdir = Path(tempfile.mkdtemp(prefix="quopus_update_"))
-    try:
-        zip_path = tmpdir / "main.zip"
-        zip_path.write_bytes(data)
+    entries = tree_data.get("tree") or []
+    if not entries:
+        return (False, "GitHub returned an empty file list.")
+
+    # 2) Hash each local file and build a download plan
+    protect = {"config", "cache", ".git", "_master2publish",
+               ".update_backup", ".venv", "venv",
+               "__pycache__"}
+
+    def _is_protected(rel: str) -> bool:
+        parts = rel.replace("\\", "/").split("/")
+        return bool(parts) and (parts[0] in protect
+                                or "__pycache__" in parts)
+
+    def _git_blob_sha(filepath: Path) -> str:
+        """git's blob SHA-1: sha1('blob {size}\\0' + content)."""
         try:
-            with zipfile.ZipFile(zip_path) as zf:
-                zf.extractall(tmpdir)
-        except zipfile.BadZipFile as e:
-            return (False, f"Downloaded archive is corrupt: {e}")
-
-        # The ZIP wraps everything in a single top-level dir named
-        # `<RepoName>-<branch>` (e.g. `Quopus-main/`). Find it -
-        # GitHub's exact naming may shift with weird branch names.
-        extracted_root = None
-        for entry in tmpdir.iterdir():
-            if entry.is_dir() and entry.name != "main.zip":
-                extracted_root = entry
-                break
-        if extracted_root is None:
-            return (False,
-                    "ZIP layout unexpected (no top-level dir).")
-
-        # 3. Copy files into place. Skip protected paths and the
-        # backup tree itself (so re-running the update can't
-        # cascade-overwrite previous backups).
-        protect = {"config", "cache", ".git", "_master2publish",
-                   ".update_backup", ".venv", "venv", "__pycache__"}
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_dir = root / ".update_backup" / stamp
-
-        copied = 0
-        unchanged = 0
-        skipped_locked = []
-        skipped_error = []
-
-        for src in extracted_root.rglob("*"):
-            if not src.is_file():
-                continue
-            rel = src.relative_to(extracted_root)
-            # First path component decides whether to protect.
-            if rel.parts and rel.parts[0] in protect:
-                continue
-            # Also skip __pycache__ anywhere in the tree.
-            if any(p == "__pycache__" for p in rel.parts):
-                continue
-            dst = root / rel
-            try:
-                # If destination exists and is byte-identical,
-                # no need to touch it.
-                if dst.is_file():
-                    try:
-                        if dst.read_bytes() == src.read_bytes():
-                            unchanged += 1
-                            continue
-                    except Exception:
-                        pass  # fall through to overwrite
-                    # Back up the old version before overwriting.
-                    bk = backup_dir / rel
-                    bk.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.copy2(dst, bk)
-                    except Exception:
-                        pass  # backup is best-effort
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(src, dst)
-                copied += 1
-            except PermissionError:
-                # On Windows, loaded DLLs (libsidwrapper.dll,
-                # libopenmpt.dll, openmpt-*.dll, sidwrapper.dll)
-                # can't be overwritten while Quopus runs.
-                skipped_locked.append(str(rel))
-            except Exception as e:
-                skipped_error.append(f"{rel}: {e}")
-
-        msg_lines = [
-            f"Update applied.",
-            f"  Updated: {copied} file(s)",
-            f"  Unchanged: {unchanged} file(s)",
-        ]
-        if skipped_locked:
-            msg_lines.append("")
-            msg_lines.append(
-                "Locked (close Quopus and re-run to update these):")
-            for name in skipped_locked[:15]:
-                msg_lines.append("  " + name)
-            if len(skipped_locked) > 15:
-                msg_lines.append(
-                    f"  ... and {len(skipped_locked)-15} more")
-        if skipped_error:
-            msg_lines.append("")
-            msg_lines.append("Errors:")
-            for name in skipped_error[:10]:
-                msg_lines.append("  " + name)
-        if copied:
-            msg_lines.append("")
-            msg_lines.append(
-                f"Backup of replaced files: {backup_dir}")
-            # Record installed version. Surface failure in the
-            # message so it's visible if Quopus can't write to
-            # config/ (read-only install, missing permission).
-            msg_lines.append("")
-            try:
-                _write_installed_version(root, to_sha)
-                msg_lines.append(
-                    f"Registered installed version: "
-                    f"{to_sha[:7]}  "
-                    f"(config/installed_version.txt)")
-            except Exception as e:
-                msg_lines.append(
-                    "WARNING: could not write "
-                    "installed_version.txt (%s). The update "
-                    "was applied but the next check won't "
-                    "know what's installed." % e)
-            msg_lines.append("")
-            msg_lines.append("Restart Quopus to load the new code.")
-
-        success = copied > 0 or unchanged > 0
-        return (success, "\n".join(msg_lines))
-    finally:
-        try:
-            shutil.rmtree(tmpdir, ignore_errors=True)
+            content = filepath.read_bytes()
         except Exception:
-            pass
+            return ""
+        header = ("blob %d\0" % len(content)).encode("ascii")
+        return hashlib.sha1(header + content).hexdigest()
+
+    _report("Comparing local files...")
+    plan = []  # list of (path, remote_blob_sha)
+    for entry in entries:
+        if entry.get("type") != "blob":
+            continue
+        path = entry.get("path", "")
+        if not path or _is_protected(path):
+            continue
+        remote_sha = entry.get("sha", "")
+        local_file = root / path
+        if not local_file.is_file():
+            plan.append((path, remote_sha))
+            continue
+        if _git_blob_sha(local_file) != remote_sha:
+            plan.append((path, remote_sha))
+
+    if not plan:
+        # Every file already matches - just record the SHA.
+        try:
+            _write_installed_version(root, to_sha)
+            return (True,
+                    "All files already match the remote.\n"
+                    f"Registered installed version: {to_sha[:7]}"
+                    " (config/installed_version.txt)")
+        except Exception as e:
+            return (True,
+                    "All files match, but couldn't update "
+                    f"installed_version.txt: {e}")
+
+    _report(f"Downloading {len(plan)} updated file(s)...")
+
+    # 3) Download each file from raw.githubusercontent.com at
+    #    the exact destination SHA - pinning to a commit avoids
+    #    a race where the branch moves mid-update.
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_dir = root / ".update_backup" / stamp
+    copied = 0
+    skipped_locked = []
+    skipped_error = []
+
+    for idx, (path, _) in enumerate(plan, start=1):
+        _report(f"Downloading {idx}/{len(plan)}: {path}")
+        url = (f"https://raw.githubusercontent.com/"
+               f"{REPO_OWNER}/{REPO_NAME}/{to_sha}/{path}")
+        try:
+            req = Request(url, headers={
+                "User-Agent": HTTP_USER_AGENT})
+            with urlopen(req, timeout=60) as r:
+                data = r.read()
+        except Exception as e:
+            skipped_error.append(
+                f"{path}: download failed ({e})")
+            continue
+
+        dest = root / path
+        try:
+            if dest.is_file():
+                bk = backup_dir / path
+                bk.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(dest, bk)
+                except Exception:
+                    pass  # backup best-effort
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            copied += 1
+        except PermissionError:
+            skipped_locked.append(path)
+        except Exception as e:
+            skipped_error.append(f"{path}: {e}")
+
+    # 4) Record installed version
+    _report("Writing installed_version.txt...")
+    version_write_error = ""
+    try:
+        _write_installed_version(root, to_sha)
+    except Exception as e:
+        version_write_error = (
+            f"WARNING: could not write installed_version.txt "
+            f"({e}). Update applied but the next check won't "
+            "know what's installed.")
+
+    # 5) Build report
+    lines = [
+        f"Update applied (tree diff).",
+        f"  Wrote:   {copied} of {len(plan)} file(s)",
+    ]
+    if skipped_locked:
+        lines.append("")
+        lines.append("Locked (close Quopus and re-run "
+                     "to finish these):")
+        for n in skipped_locked[:15]:
+            lines.append("  " + n)
+        if len(skipped_locked) > 15:
+            lines.append(
+                f"  ... and {len(skipped_locked)-15} more")
+    if skipped_error:
+        lines.append("")
+        lines.append("Errors:")
+        for n in skipped_error[:10]:
+            lines.append("  " + n)
+    if copied:
+        lines.append("")
+        lines.append(f"Backup: {backup_dir}")
+        lines.append("")
+        if version_write_error:
+            lines.append(version_write_error)
+        else:
+            lines.append(
+                f"Registered installed version: {to_sha[:7]}  "
+                f"(config/installed_version.txt)")
+        lines.append("")
+        lines.append("Restart Quopus to load the new code.")
+    return (copied > 0, "\n".join(lines))
 
 
 def _write_installed_version(repo_root: Path, sha: str) -> None:
@@ -778,12 +865,18 @@ try:
 
     class UpdatePullWorker(QObject):
         """Downloads + installs an update on the given repo root.
-        Tries the incremental file-by-file path first when
-        `from_sha` is known, falls back to the full ZIP archive
-        otherwise (or when the incremental path can't safely apply
-        the changes). `to_sha` is the destination commit and is
-        recorded into installed_version.txt at the end."""
+        Tries the compare-API incremental path first when
+        `from_sha` is known and reachable, falls back to the
+        tree-diff per-file path otherwise. Never downloads the
+        full branch ZIP. `to_sha` is the destination commit and
+        is recorded into installed_version.txt at the end.
+
+        Emits `progress(str)` from the worker thread with short
+        stage labels so the UI can show 'Fetching file list...',
+        'Downloading 3/12: ...', etc. instead of looking frozen
+        during the per-file download stretch."""
         done = pyqtSignal(bool, str)
+        progress = pyqtSignal(str)
 
         def __init__(self, repo_root: str,
                      from_sha: str = "", to_sha: str = ""):
@@ -793,9 +886,11 @@ try:
             self._to_sha = to_sha or ""
 
         def run(self):
-            ok, msg = pull_update(self._root,
-                                  from_sha=self._from_sha,
-                                  to_sha=self._to_sha)
+            ok, msg = pull_update(
+                self._root,
+                from_sha=self._from_sha,
+                to_sha=self._to_sha,
+                progress_cb=lambda s: self.progress.emit(s))
             self.done.emit(ok, msg)
 
     def start_background_check(
