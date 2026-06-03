@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 16:39
+# date_time: 2026-06-03 17:08
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local working copy is behind the
@@ -68,30 +68,52 @@ class UpdateInfo:
     latest_commit_short: str = ""
     latest_commit_message: str = ""
     latest_commit_date: str = ""
-    method: str = ""           # "git" / "api"
+    method: str = ""           # "git" / "api" / "cache"
     repo_root: str = ""        # absolute path to the local clone
+    # True when this check just initialised installed_version.txt
+    # for a fresh no-git install (we recorded the current remote
+    # SHA as 'installed' because we had no other reference). The
+    # UI uses it to phrase a friendly first-run message instead
+    # of pretending the user was on this commit all along.
+    first_run_init: bool = False
 
 
 # ------------------------------------------------------------------
 # Repo discovery
 # ------------------------------------------------------------------
 def _find_repo_root(start: Optional[Path] = None) -> Optional[Path]:
-    """Walk up from `start` to find the Quopus install root. Two
-    markers we accept (first hit wins):
+    """Walk up from `start` to find the Quopus install root.
 
-      - `.git/` directory  - proper git checkout
-      - `quopus.py` next to `quopus_lib/` - ZIP-only install
+    Two-pass discovery so the `.git` directory wins even when
+    `quopus.py` sits in a subfolder of the actual repo (e.g.
+    Mario's `_master2publish/` next to a `.git/` one level up):
 
-    Either way we end up at the repo root."""
-    p = (start or Path(__file__).resolve()).parent
+      Pass 1: walk up the entire tree looking for a `.git`.
+              If found, that's the root - even if a `quopus.py`
+              marker was passed on the way up.
+      Pass 2: walk up again, this time accepting a `quopus.py`
+              next to `quopus_lib/` as the root. Used for
+              ZIP-only installs that have no git directory
+              anywhere up the chain."""
+    starts_from = (start or Path(__file__).resolve()).parent
+
+    # Pass 1: .git anywhere up the tree.
+    p = starts_from
     for _ in range(8):
         if (p / ".git").exists():
             return p
+        if p.parent == p:
+            break
+        p = p.parent
+
+    # Pass 2: quopus.py + quopus_lib (no git at all).
+    p = starts_from
+    for _ in range(8):
         if (p / "quopus.py").is_file() \
                 and (p / "quopus_lib").is_dir():
             return p
         if p.parent == p:
-            return None
+            break
         p = p.parent
     return None
 
@@ -282,6 +304,29 @@ def _check_via_api(repo_root: Optional[Path]) -> UpdateInfo:
             local = _read_local_sha(repo_root)
             if local:
                 info.local_sha = local
+            elif info.latest_sha:
+                # First-run init for no-git installs (typical
+                # standard-user case: downloaded the ZIP, no
+                # .git, no installed_version.txt yet). Without
+                # this, every check would render "(unknown)" as
+                # the local HEAD forever. We can't actually know
+                # which version they installed, but it's most
+                # likely the current branch tip (they just got
+                # it), so we record that. The next time the
+                # remote moves, that becomes a real update.
+                try:
+                    cfg_dir = repo_root / "config"
+                    cfg_dir.mkdir(parents=True, exist_ok=True)
+                    (cfg_dir / "installed_version.txt"
+                     ).write_text(info.latest_sha + "\n",
+                                  encoding="utf-8")
+                    info.local_sha = info.latest_sha
+                    info.first_run_init = True
+                except Exception:
+                    # Read-only install dir? Leave local_sha
+                    # empty and the UI will show '(unknown)' as
+                    # a fallback. Not great but not fatal.
+                    pass
         info.ok = True
         if info.latest_sha and info.local_sha \
                 and info.local_sha != info.latest_sha:

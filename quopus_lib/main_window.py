@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 16:56
+# date_time: 2026-06-03 17:08
 """
 Main window layout:
 
@@ -2595,9 +2595,15 @@ class QuopusMain(QMainWindow):
         #      manually - either way it's news worth showing)
         # On a brand-new install (no last_seen), don't fire a
         # popup - the user hasn't asked for it, just record the
-        # SHA silently.
+        # SHA silently. Same for first_run_init: the checker just
+        # auto-registered the current remote SHA as 'installed'
+        # because there was no .git or installed_version.txt; the
+        # 'is_update_available' flag is False as a consequence,
+        # so nothing to show.
         notify = (info.is_update_available
                   or (sha_moved and not first_time))
+        if getattr(info, "first_run_init", False):
+            notify = False
 
         # Snooze: when the auto-startup check produces the same
         # SHA we already popped for last time, stay quiet. Manual
