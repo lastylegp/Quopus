@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:22
+# date_time: 2026-06-03 18:26
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local installation is behind the
@@ -511,7 +511,10 @@ def _pull_update_incremental(
             plan, start=1):
         if progress_cb is not None:
             try:
-                progress_cb(f"[{idx}/{total}] {op}: {dest_rel}")
+                pct = (idx * 100) // total
+                progress_cb(
+                    f"{pct}%/100  ({idx}/{total}) "
+                    f"{op}: {dest_rel}")
             except Exception:
                 pass
         dest = root / dest_rel
@@ -767,7 +770,9 @@ def _pull_update_tree_diff(
     skipped_error = []
 
     for idx, (path, _) in enumerate(plan, start=1):
-        _report(f"Downloading {idx}/{len(plan)}: {path}")
+        pct = (idx * 100) // len(plan)
+        _report(f"Downloading {pct}%/100  ({idx}/{len(plan)}): "
+                f"{path}")
         url = (f"https://raw.githubusercontent.com/"
                f"{REPO_OWNER}/{REPO_NAME}/{to_sha}/{path}")
         try:
