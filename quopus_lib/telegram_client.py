@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 19:39
+# date_time: 2026-06-03 19:48
 """Telegram client for Quopus Commander (MTProto / Telethon).
 
 A full Telegram *user* client embedded as a PyQt6 dialog: it logs
@@ -597,12 +597,18 @@ class TelegramDialog(QDialog):
         # Cached messages per chat. Survives buffer switches so a
         # second visit is instant. Keyed by chat_id, value is the
         # full known message list (oldest first). New incoming
-        # messages append; "load older" prepends.
+        # messages append; "load older" prepends. ALSO persisted
+        # to disk under cache/telegram/ so a Quopus restart picks
+        # the messages back up without hitting the network.
         self._msg_cache: Dict[int, list] = {}
         # Whether we've already loaded the latest batch for a chat
         # this session (so a re-open uses the cache instead of
-        # re-fetching everything).
+        # re-fetching everything). Persisted alongside the message
+        # cache - if we had a chat synced last session, it counts
+        # as still-fresh on the next launch too.
         self._cache_fresh: Dict[int, bool] = {}
+        self._cache_dir = self._tg_cache_dir()
+        self._load_message_cache_from_disk()
         # How many messages to ask for on initial open of a chat
         # and on each "load older" click.
         self._initial_limit = 100
@@ -743,6 +749,107 @@ class TelegramDialog(QDialog):
                 mw_cfg["telegram_archived"] = ids
         except Exception:
             pass
+
+    # -- persistent message cache ---------------------------------
+    def _tg_cache_dir(self) -> "Path":
+        """Where per-chat cache JSONs live. Sits under the Quopus
+        cache/ tree (which the updater leaves alone) so we don't
+        clutter the user's config/ folder."""
+        from pathlib import Path
+        from .config import CONFIG_DIR
+        # cache/ is a sibling of config/ in the standard layout.
+        cache_root = Path(CONFIG_DIR).parent / "cache"
+        d = cache_root / "telegram"
+        try:
+            d.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        return d
+
+    def _msg_to_dict(self, m: TgMessage) -> dict:
+        return {
+            "id": m.id, "chat_id": m.chat_id,
+            "sender": m.sender, "text": m.text,
+            "timestamp": m.timestamp, "out": m.out,
+            "media": m.media, "media_kind": m.media_kind,
+            "filename": m.filename, "thumb_b64": m.thumb_b64,
+        }
+
+    def _msg_from_dict(self, d: dict) -> Optional[TgMessage]:
+        try:
+            return TgMessage(
+                id=int(d["id"]), chat_id=int(d["chat_id"]),
+                sender=d.get("sender", ""),
+                text=d.get("text", ""),
+                timestamp=float(d.get("timestamp", 0.0)),
+                out=bool(d.get("out", False)),
+                media=bool(d.get("media", False)),
+                media_kind=d.get("media_kind", ""),
+                filename=d.get("filename", ""),
+                thumb_b64=d.get("thumb_b64", ""))
+        except Exception:
+            return None
+
+    def _load_message_cache_from_disk(self):
+        """Read every per-chat JSON in cache/telegram/ into
+        self._msg_cache. Each loaded chat is also marked
+        cache_fresh=True so the next visit skips the network
+        round-trip - live updates pull in new messages
+        afterwards via _on_new_message."""
+        d = self._cache_dir
+        if not d.is_dir():
+            return
+        loaded = 0
+        for p in d.glob("chat_*.json"):
+            try:
+                import json
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            chat_id = data.get("chat_id")
+            raw_msgs = data.get("messages") or []
+            if not isinstance(chat_id, int):
+                continue
+            msgs = []
+            for d_ in raw_msgs:
+                m = self._msg_from_dict(d_)
+                if m is not None:
+                    msgs.append(m)
+            if msgs:
+                msgs.sort(key=lambda m: m.id)
+                self._msg_cache[chat_id] = msgs
+                self._cache_fresh[chat_id] = True
+                loaded += 1
+        if loaded:
+            _log("Loaded %d chat caches from disk" % loaded)
+
+    def _save_chat_cache(self, chat_id: int):
+        """Persist the current cache for one chat to its JSON.
+        Called whenever _merge_into_cache touches the entry."""
+        msgs = self._msg_cache.get(chat_id) or []
+        if not msgs:
+            return
+        # Cap the on-disk size: keep the most recent N messages.
+        # The cache is a convenience, not an archive - if someone
+        # really needs older messages they can use 'Load older'
+        # which fetches from the server.
+        MAX_PERSISTED = 500
+        if len(msgs) > MAX_PERSISTED:
+            persist = msgs[-MAX_PERSISTED:]
+        else:
+            persist = msgs
+        try:
+            import json
+            payload = {
+                "chat_id": chat_id,
+                "messages": [self._msg_to_dict(m) for m in persist],
+            }
+            target = self._cache_dir / ("chat_%d.json" % chat_id)
+            target.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8")
+        except Exception as e:
+            _log("Couldn't persist chat %d: %s" % (chat_id, e))
 
     def _edit_colors(self):
         """Open a small dialog with four color swatches (outgoing
@@ -1200,23 +1307,33 @@ class TelegramDialog(QDialog):
         self._set_compose_enabled(True)
         self._loading_older = False
         # Render cached messages immediately (so re-opening a chat
-        # is instant), then either re-fetch the newest batch (to
-        # pick up anything that arrived while we were away) or
-        # show the cache as-is.
+        # is instant), then either re-fetch the newest batch (only
+        # the first time we open this chat in the session) or trust
+        # the cache + live updates and skip the network round-trip.
         cached = self._msg_cache.get(chat_id, [])
+        cache_is_fresh = bool(self._cache_fresh.get(chat_id))
         if cached:
-            _log("  rendering %d cached msgs" % len(cached))
+            _log("  rendering %d cached msgs (fresh=%s)"
+                 % (len(cached), cache_is_fresh))
             self._rebuild_view(cached)
-            self._set_status(
-                "Showing %d cached messages - syncing..."
-                % len(cached))
+            if cache_is_fresh:
+                self._set_status(
+                    "%d messages (cached)" % len(cached))
+            else:
+                self._set_status(
+                    "Showing %d cached messages - syncing..."
+                    % len(cached))
         else:
             self.view_msgs.clear()
             self._set_status("Loading...")
         self._update_cache_label()
-        # Always ask the server for the freshest batch. If we
-        # already have a non-empty cache, we'll merge by id in
-        # _on_messages so duplicates don't appear.
+        # Only hit the network when we haven't fetched this chat
+        # yet in this session. Live updates (_on_new_message) keep
+        # the cache current after that point, so repeated chat
+        # switches are local-only - no network spam, no flicker.
+        if cache_is_fresh and cached:
+            _log("  cache fresh - skipping server fetch")
+            return
         if self._worker is not None:
             self._worker.fetch_messages(
                 chat_id, self._initial_limit, before_id=0)
@@ -1263,10 +1380,13 @@ class TelegramDialog(QDialog):
                           incoming: list) -> list:
         """Merge a batch of messages into the per-chat cache,
         de-duplicating by message id and keeping oldest-first
-        order. Returns the merged list."""
+        order. Returns the merged list. Persists the chat to
+        disk after each merge so the cache survives restarts."""
         cached = self._msg_cache.get(chat_id, [])
         if not cached:
             self._msg_cache[chat_id] = list(incoming)
+            if incoming:
+                self._save_chat_cache(chat_id)
             return self._msg_cache[chat_id]
         if not incoming:
             return cached
@@ -1277,6 +1397,7 @@ class TelegramDialog(QDialog):
             by_id[m.id] = m
         merged = sorted(by_id.values(), key=lambda m: m.id)
         self._msg_cache[chat_id] = merged
+        self._save_chat_cache(chat_id)
         return merged
 
     def _load_older(self):
@@ -1554,8 +1675,17 @@ class TelegramDialog(QDialog):
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _on_new_message(self, m: TgMessage):
-        # Live update only if it's for the open chat; otherwise bump
-        # the unread hint by refreshing the chat list lazily.
+        # Always merge the incoming message into the per-chat
+        # cache, even if the chat isn't currently displayed.
+        # Without this the cache would go stale the moment the
+        # user switched away, and our skip-refetch logic would
+        # then show outdated content on the next visit.
+        try:
+            self._merge_into_cache(m.chat_id, [m])
+        except Exception:
+            pass
+        # Live update only if it's for the open chat; otherwise
+        # bump the unread hint by refreshing the chat list lazily.
         if m.chat_id == self._current_chat:
             self._append_message(m)
         else:
