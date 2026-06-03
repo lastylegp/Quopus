@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 00:41
+# date_time: 2026-06-03 19:34
 """Telegram client for Quopus Commander (MTProto / Telethon).
 
 A full Telegram *user* client embedded as a PyQt6 dialog: it logs
@@ -639,27 +639,56 @@ class TelegramDialog(QDialog):
     # -- bubble colors (configurable, persisted in quopus.cfg) ----
     def _load_bubble_colors(self):
         """Read the chat-bubble colors from the Quopus config, with
-        sensible defaults if they're missing."""
-        try:
-            from .config import load_config
-            cfg = load_config()
-        except Exception:
-            cfg = {}
+        sensible defaults if they're missing. Prefers the main
+        window's in-memory config dict (always the latest) and
+        falls back to load_config() from disk for the bootstrap
+        case where the dialog opens before any other save has
+        happened."""
+        cfg = None
+        mw = self.parent()
+        mw_cfg = getattr(mw, "config", None)
+        if isinstance(mw_cfg, dict):
+            cfg = mw_cfg
+        else:
+            try:
+                from .config import load_config
+                cfg = load_config()
+            except Exception:
+                cfg = {}
         self._col_out_bg = cfg.get("telegram_out_bg", "#1f6e3a")
         self._col_out_fg = cfg.get("telegram_out_fg", "#eafbe7")
         self._col_in_bg = cfg.get("telegram_in_bg", "#1c3f63")
         self._col_in_fg = cfg.get("telegram_in_fg", "#e7f0fb")
 
     def _save_bubble_colors(self):
-        """Persist the current bubble colors back to quopus.cfg."""
+        """Persist the current bubble colors back to quopus.cfg.
+
+        IMPORTANT: We also patch the main window's live config
+        dict, because the main window calls save_config(self.config)
+        on its own copy at various points (settings dialogs, window
+        close, lister actions). If we only wrote to disk here, the
+        next main-window save would clobber our color entries with
+        the values it had at startup. Same dual-write pattern as
+        _save_archived() above."""
         try:
             from .config import load_config, save_config
+            # Disk first - fresh round-trip so we don't lose any
+            # other keys that may have changed since startup.
             cfg = load_config()
             cfg["telegram_out_bg"] = self._col_out_bg
             cfg["telegram_out_fg"] = self._col_out_fg
             cfg["telegram_in_bg"] = self._col_in_bg
             cfg["telegram_in_fg"] = self._col_in_fg
             save_config(cfg)
+            # Then patch the main window's in-memory config so its
+            # next save() carries the same values.
+            mw = self.parent()
+            mw_cfg = getattr(mw, "config", None)
+            if isinstance(mw_cfg, dict):
+                mw_cfg["telegram_out_bg"] = self._col_out_bg
+                mw_cfg["telegram_out_fg"] = self._col_out_fg
+                mw_cfg["telegram_in_bg"] = self._col_in_bg
+                mw_cfg["telegram_in_fg"] = self._col_in_fg
         except Exception as e:
             QMessageBox.warning(
                 self, "Telegram",
