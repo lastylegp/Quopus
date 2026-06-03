@@ -1,4 +1,4 @@
-# date_time: 2026-05-30 18:47
+# date_time: 2026-06-03 13:09
 """
 Main window layout:
 
@@ -214,6 +214,15 @@ class QuopusMain(QMainWindow):
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._update_stats)
         QTimer.singleShot(100, lambda: (self._update_stats(), self.timer.start(1000)))
+
+        # Auto-check GitHub for a newer version a moment after the
+        # window has settled. Runs in a background thread so a slow
+        # or unreachable network can never block startup. The check
+        # updates self.lbl_status with a small splash, then either
+        # restores "Ready" or pops up the update dialog.
+        self._update_thread = None
+        self._update_worker = None
+        QTimer.singleShot(800, self._start_update_check)
 
         self.left_lister.set_active(True)
         self.right_lister.set_active(False)
@@ -1841,6 +1850,65 @@ class QuopusMain(QMainWindow):
                 menu = mb.addMenu(group_name)
                 _add_items(menu, items)
 
+        # Help menu - lives at the very end so it sits on the right
+        # like in most desktop apps.
+        help_menu = mb.addMenu("Help")
+        act_check = help_menu.addAction("Check for updates")
+        act_check.triggered.connect(
+            lambda: self._start_update_check(manual=True))
+        # Checkable toggle: auto-check on startup. Stays in sync
+        # with config["update_check_enabled"]; the check on Help
+        # -> Check for updates is unaffected (always works).
+        self._act_autocheck = help_menu.addAction(
+            "Check for updates at startup")
+        self._act_autocheck.setCheckable(True)
+        self._act_autocheck.setChecked(
+            bool(self.config.get("update_check_enabled", True)))
+        self._act_autocheck.toggled.connect(
+            self._on_toggle_autocheck)
+        help_menu.addSeparator()
+        act_about = help_menu.addAction("About Quopus")
+        act_about.triggered.connect(self._show_about)
+
+    def _on_toggle_autocheck(self, checked: bool):
+        """User flipped the 'Check at startup' switch in the Help
+        menu - persist to quopus.cfg so the next launch picks it up.
+        Briefly mirror the choice in the status bar so the click
+        gives visible feedback."""
+        self.config["update_check_enabled"] = bool(checked)
+        try:
+            save_config(self.config)
+        except Exception:
+            pass
+        self.lbl_status.setText(
+            " Auto-update check: ON "
+            if checked else " Auto-update check: OFF ")
+        try:
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(
+                3000, lambda: self.lbl_status.setText(" Ready "))
+        except Exception:
+            pass
+
+    def _show_about(self):
+        """Tiny About box. Kept here so the Help menu has more than
+        one entry; the heavy README dialog is bound to F1."""
+        from PyQt6.QtWidgets import QMessageBox
+        from .update_checker import (
+            REPO_OWNER, REPO_NAME, DEFAULT_BRANCH)
+        QMessageBox.about(
+            self, "Quopus Commander",
+            "<b>Quopus Commander v1.0</b><br>"
+            "by lA-sTYLe / Quantum, 05/2026<br><br>"
+            "A Directory Opus 4-inspired file manager,<br>"
+            "extended with C64 / Amiga / BBS tooling.<br><br>"
+            f"GitHub: <a href='https://github.com/"
+            f"{REPO_OWNER}/{REPO_NAME}'>"
+            f"{REPO_OWNER}/{REPO_NAME}</a><br>"
+            f"Branch: {DEFAULT_BRANCH}<br><br>"
+            "Help -> Check for updates pulls the latest "
+            "commit from GitHub.")
+
     def _on_splitter_moved(self, _pos=None, _idx=None):
         """Persist the lister splitter widths whenever the user
         finishes dragging the divider. Stored as a 3-element list
@@ -2429,6 +2497,272 @@ class QuopusMain(QMainWindow):
 
     def _status(self, msg):
         self.lbl_status.setText(f" {msg} ")
+
+    # ----------------------------------------------------------
+    # Update checker
+    # ----------------------------------------------------------
+    def _start_update_check(self, manual: bool = False):
+        """Spin up a background worker that asks GitHub whether the
+        local clone is behind. The thread reference is stashed on
+        self so Qt doesn't garbage-collect the QThread mid-flight
+        (which produces 'QThread: Destroyed while running' warnings
+        and a silent no-op). manual=True means the user picked
+        Help->Check for updates; we report the result even when
+        there's nothing new.
+
+        The automatic startup check honours
+        config["update_check_enabled"]: when False (e.g. offline
+        installs, restricted networks), startup stays quiet. The
+        manual Help -> Check menu entry bypasses the toggle so the
+        user can always check explicitly if they want to."""
+        if not manual and not self.config.get(
+                "update_check_enabled", True):
+            # Silenced by user preference - nothing to do.
+            return
+        try:
+            from .update_checker import start_background_check
+        except Exception as e:
+            if manual:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Updates",
+                    "Update checker not available: %s" % e)
+            return
+        # Don't stack checks - if one's already running just say so.
+        if self._update_thread is not None:
+            try:
+                if self._update_thread.isRunning():
+                    if manual:
+                        self.lbl_status.setText(
+                            " Update check already running... ")
+                    return
+            except RuntimeError:
+                pass
+        self.lbl_status.setText(" Checking for updates... ")
+        self._update_manual = manual
+        # Hand the worker the last remote SHA we saw - if the
+        # branch tip hasn't moved since then, it returns instantly
+        # via the cache path and we save a git fetch.
+        known_sha = self.config.get(
+            "update_last_seen_sha", "") or ""
+        self._update_thread, self._update_worker = \
+            start_background_check(
+                self,
+                lambda info: self._on_update_check_done(info),
+                known_remote_sha=known_sha)
+
+    def _on_update_check_done(self, info):
+        """Worker reported back. Update the status bar and, if a
+        new commit is available, pop the update dialog. On failure
+        we stay quiet unless the user explicitly asked us to check
+        (manual=True from the Help menu)."""
+        manual = getattr(self, "_update_manual", False)
+        # Drop our thread references - Qt's deleteLater chain takes
+        # care of the actual cleanup. Doing this here means the
+        # next _start_update_check finds a clean slate.
+        self._update_thread = None
+        self._update_worker = None
+
+        if not info.ok:
+            if manual:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Update check failed",
+                    "Couldn't check for updates:\n\n" + info.error)
+            self.lbl_status.setText(" Ready ")
+            return
+        if not info.is_update_available:
+            self.lbl_status.setText(
+                " Up to date (commit %s) "
+                % (info.local_sha[:7] if info.local_sha
+                   else info.latest_commit_short or "?"))
+            if manual:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self, "Up to date",
+                    "You're on the latest commit:\n\n"
+                    "  %s  %s\n"
+                    "  %s"
+                    % (info.local_sha[:7] or info.latest_commit_short,
+                       info.latest_commit_message
+                       or "(no message)",
+                       info.latest_commit_date or ""))
+            # Reset the status line back to plain "Ready" after a
+            # few seconds so the bar isn't permanently labelled with
+            # the commit hash.
+            try:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(
+                    5000, lambda: self.lbl_status.setText(" Ready "))
+            except Exception:
+                pass
+            return
+        # Update available. Did the user already see this exact
+        # commit on a previous run? If so and this is the silent
+        # startup check (not Help -> Check for updates), don't
+        # nag them again - they've already snoozed it.
+        last_seen = self.config.get(
+            "update_last_seen_sha", "") or ""
+        if not manual and last_seen \
+                and last_seen == info.latest_sha:
+            # Briefly hint that an update is sitting there, then
+            # let the status bar go back to Ready. The user can
+            # still trigger the dialog manually from Help.
+            self.lbl_status.setText(
+                " Update pending (Help -> Check for updates) ")
+            try:
+                from PyQt6.QtCore import QTimer
+                QTimer.singleShot(
+                    5000,
+                    lambda: self.lbl_status.setText(" Ready "))
+            except Exception:
+                pass
+            return
+        # Brand new commit (or user explicitly asked) - show dialog.
+        self.lbl_status.setText(
+            " New version available (%d commit%s behind) "
+            % (info.commits_behind,
+               "" if info.commits_behind == 1 else "s"))
+        self._show_update_dialog(info)
+        # Whatever the user did in the dialog (Update / Open /
+        # Later / close), remember the SHA so they're not pestered
+        # about the same commit on the next launch.
+        self.config["update_last_seen_sha"] = info.latest_sha
+        try:
+            save_config(self.config)
+        except Exception:
+            pass
+
+    def _show_update_dialog(self, info):
+        """Modal dialog explaining what's new and offering 'Update
+        now' / 'Open on GitHub' / 'Later'. A checkbox at the bottom
+        lets the user toggle the startup auto-check on the spot -
+        useful in the exact moment they realise they don't want to
+        be pestered (or, conversely, that they want it back on)."""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
+            QTextBrowser, QDialogButtonBox, QMessageBox, QCheckBox)
+        from PyQt6.QtGui import QDesktopServices
+        from PyQt6.QtCore import QUrl
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Quopus update available")
+        dlg.resize(560, 400)
+        v = QVBoxLayout(dlg)
+        title = QLabel(
+            "<b>A new Quopus version is available on GitHub.</b>")
+        v.addWidget(title)
+
+        details = QTextBrowser()
+        details.setOpenExternalLinks(False)
+        local_short = info.local_sha[:7] if info.local_sha \
+            else "(unknown)"
+        commits_msg = ("%d commit%s ahead of your local copy."
+                       % (info.commits_behind,
+                          "" if info.commits_behind == 1 else "s")
+                       if info.commits_behind else
+                       "Remote tip differs from your local copy.")
+        method_note = (
+            "Checked via local git." if info.method == "git"
+            else "Checked via GitHub API.")
+        import html as _html_mod
+        details.setHtml(
+            f"<p>{commits_msg}</p>"
+            f"<p><b>Latest commit:</b><br>"
+            f"&nbsp;&nbsp;<code>{info.latest_commit_short}</code> "
+            f"{_html_mod.escape(info.latest_commit_message)}<br>"
+            f"&nbsp;&nbsp;<i>{info.latest_commit_date}</i></p>"
+            f"<p><b>Your local HEAD:</b> "
+            f"<code>{local_short}</code></p>"
+            f"<p style='color:#666;'>{method_note}<br>"
+            f"Repository path: {info.repo_root}</p>")
+        v.addWidget(details, 1)
+
+        # Auto-check toggle - mirrors the Help-menu checkbox and the
+        # config entry. Changing it writes through to quopus.cfg
+        # immediately, and the Help menu action is updated to match
+        # so the two stay in sync.
+        cb_auto = QCheckBox("Check for updates on every Quopus start")
+        cb_auto.setChecked(
+            bool(self.config.get("update_check_enabled", True)))
+
+        def _on_auto_toggle(checked: bool):
+            self.config["update_check_enabled"] = bool(checked)
+            try:
+                save_config(self.config)
+            except Exception:
+                pass
+            # Keep the Help-menu checkbox in sync.
+            try:
+                act = getattr(self, "_act_autocheck", None)
+                if act is not None and act.isChecked() != checked:
+                    # blockSignals so we don't bounce back here.
+                    act.blockSignals(True)
+                    act.setChecked(checked)
+                    act.blockSignals(False)
+            except Exception:
+                pass
+
+        cb_auto.toggled.connect(_on_auto_toggle)
+        v.addWidget(cb_auto)
+
+        # Buttons row
+        row = QHBoxLayout()
+        bt_pull = QPushButton("Update now")
+        bt_open = QPushButton("Open on GitHub")
+        bt_later = QPushButton("Later")
+        row.addWidget(bt_pull)
+        row.addWidget(bt_open)
+        row.addStretch(1)
+        row.addWidget(bt_later)
+        v.addLayout(row)
+
+        # Pull worker is held on `dlg` so it lives at least as long
+        # as the dialog (Qt would otherwise destroy the QThread
+        # mid-pull on the second click, deleteLater notwithstanding).
+        dlg._pull_thread = None
+        dlg._pull_worker = None
+        repo_root = info.repo_root
+        # If we know our local SHA we can ask GitHub's compare API
+        # which files changed, and just download those - typically
+        # a few KB instead of the 86 MB full archive. The pull
+        # worker falls back to the full ZIP automatically if the
+        # compare path can't be used safely.
+        from_sha = info.local_sha or ""
+
+        def _do_pull():
+            from .update_checker import start_background_pull
+            bt_pull.setEnabled(False)
+            bt_pull.setText("Pulling...")
+            self.lbl_status.setText(" Pulling updates from GitHub... ")
+
+            def _done(ok, msg):
+                self.lbl_status.setText(
+                    " Ready " if ok else " Update failed ")
+                if ok:
+                    QMessageBox.information(
+                        dlg, "Update complete", msg)
+                    dlg.accept()
+                else:
+                    QMessageBox.warning(
+                        dlg, "Update failed", msg)
+                    bt_pull.setEnabled(True)
+                    bt_pull.setText("Update now")
+            dlg._pull_thread, dlg._pull_worker = \
+                start_background_pull(
+                    dlg, repo_root, _done,
+                    from_sha=from_sha)
+
+        def _open_github():
+            from .update_checker import REPO_OWNER, REPO_NAME
+            QDesktopServices.openUrl(QUrl(
+                "https://github.com/%s/%s/commits/main"
+                % (REPO_OWNER, REPO_NAME)))
+
+        bt_pull.clicked.connect(_do_pull)
+        bt_open.clicked.connect(_open_github)
+        bt_later.clicked.connect(dlg.reject)
+        dlg.exec()
 
     def _update_stats(self):
         self.lbl_time.setText(" " + datetime.now().strftime("%H:%M:%S") + " ")

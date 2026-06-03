@@ -1,4 +1,4 @@
-# date_time: 2026-05-30 18:38
+# date_time: 2026-06-02 22:05
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -121,6 +121,8 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("ftp_site",     "FTP site (direct connect to bookmark)"),
         ("ftp_upload",   "FTP upload (upload selection from other panel)"),
         ("telnet",       "Telnet / SSH / Raw TCP client"),
+        ("telegram",     "Telegram client (chats, messages, files)"),
+        ("irc",          "IRC client (multi-server, channels, DCC)"),
         ("qdrive",       "Quopus Drive connect (open dialog)"),
         ("qdrive_site",  "Quopus Drive site (direct connect to bookmark)"),
         ("database",     "Quopus Database (catalog and search archives)"),

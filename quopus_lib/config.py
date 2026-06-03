@@ -1,4 +1,4 @@
-# date_time: 2026-05-29 20:18
+# date_time: 2026-06-03 11:57
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -464,6 +464,41 @@ DEFAULT_CONFIG = {
     "text_reader_font_size": 11,
     "text_reader_fg": "#FFFFFF",
     "text_reader_bg": "#000000",
+    # Telegram client chat-bubble colors. Outgoing (your own)
+    # messages vs. incoming. Each has a background and text color.
+    # Editable via the Telegram window's "Colors..." button.
+    "telegram_out_bg": "#1f6e3a",   # own messages - green bubble
+    "telegram_out_fg": "#eafbe7",
+    "telegram_in_bg":  "#1c3f63",   # others - blue bubble
+    "telegram_in_fg":  "#e7f0fb",
+    # Chat IDs the user has archived; hidden from the main list and
+    # shown only when the Archive view is toggled on.
+    "telegram_archived": [],
+    # IRC chat logging. When the global toggle is on, every IRC
+    # buffer is logged unless explicitly disabled per-buffer; when
+    # off, individual buffers can still be enabled. Files land
+    # under irc_log_dir/<server>/<buffer>.log; empty means
+    # <quopus>/config/irc_logs/.
+    "irc_log_enabled": False,
+    "irc_log_dir": "",
+    # Per-buffer overrides: {"server/buffer": "on" | "off"}
+    # "on" forces logging, "off" forces no logging, missing key
+    # falls back to irc_log_enabled.
+    "irc_log_overrides": {},
+    # Auto-update check on startup. When True, Quopus asks GitHub
+    # whether a newer version of the main branch is available a
+    # moment after the window appears, and pops a dialog if so.
+    # Set to False to skip the check entirely (e.g. on machines
+    # without Internet, or to avoid the brief startup HTTP call).
+    # The Help -> Check for updates menu entry still works either
+    # way - it's an explicit click, not subject to this toggle.
+    "update_check_enabled": True,
+    # Remote-tip SHA that the user has already been notified about.
+    # When the startup check sees this same SHA again, the dialog
+    # stays closed - the user already saw this commit and chose
+    # not to update yet, no need to bug them on every launch.
+    # Reset to "" to get the next check to pop the dialog again.
+    "update_last_seen_sha": "",
     # Global UI font scaling. The app has dozens of stylesheets
     # with hardcoded font sizes (font-size: 11px;) for the
     # Workbench/Amiga look. Instead of letting QApplication.setFont
