@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 19:34
+# date_time: 2026-06-03 19:39
 """Telegram client for Quopus Commander (MTProto / Telethon).
 
 A full Telegram *user* client embedded as a PyQt6 dialog: it logs
@@ -1474,9 +1474,17 @@ class TelegramDialog(QDialog):
         # Remember the latest day key so _append_message can decide
         # whether to insert a fresh separator before a live update.
         self._last_render_day = prev_day
-        # Defer the scroll-to-bottom until the document has laid
-        # out, otherwise maximum() is still 0.
+        # Try to scroll to the latest message multiple times: once
+        # right away (works when there are few messages and layout
+        # is instant), and again after a few Qt event-loop turns
+        # in case the document is heavy (images, lots of HTML) and
+        # the layout pass hasn't finished yet. Without the later
+        # attempts, the view ends up parked at the top because
+        # scrollBar.maximum() was still 0 when we asked.
+        self._scroll_to_bottom()
         QTimer.singleShot(0, self._scroll_to_bottom)
+        QTimer.singleShot(50, self._scroll_to_bottom)
+        QTimer.singleShot(200, self._scroll_to_bottom)
 
     @staticmethod
     def _day_key(ts: float) -> str:
@@ -1511,7 +1519,19 @@ class TelegramDialog(QDialog):
             + label + "</span></div>")
 
     def _scroll_to_bottom(self):
+        """Move both the cursor and the scrollbar to the end of
+        the document. Belt-and-suspenders: setHtml() doesn't lay
+        out synchronously, so the scrollbar's maximum() can still
+        be 0 right after we set the content. Moving the text
+        cursor first forces layout, then ensureCursorVisible() +
+        scrollbar slam catches whichever stage Qt is currently
+        in."""
         try:
+            from PyQt6.QtGui import QTextCursor
+            cur = self.view_msgs.textCursor()
+            cur.movePosition(QTextCursor.MoveOperation.End)
+            self.view_msgs.setTextCursor(cur)
+            self.view_msgs.ensureCursorVisible()
             sb = self.view_msgs.verticalScrollBar()
             sb.setValue(sb.maximum())
         except Exception:
