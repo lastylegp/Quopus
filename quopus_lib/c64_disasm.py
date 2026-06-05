@@ -1,3 +1,4 @@
+# date_time: 2026-06-05 19:59
 """
 6502 disassembler with a dual-pane navigation viewer for C64 .prg / .bin files.
 
@@ -19,6 +20,7 @@ documented opcodes are covered; illegal opcodes show as `.byte $XX`.
 """
 from pathlib import Path
 import re
+import sys as _sys_module
 
 from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import (
@@ -33,6 +35,42 @@ from .palette import (
     C, WB_TITLEBAR_INACTIVE_QSS, INFOBAR_QSS, SCROLLBAR_QSS,
     button_qss, get_topaz_font,
 )
+
+
+def _safe_stderr_write(msg: str) -> None:
+    """Write to stderr if it exists, no-op otherwise.
+
+    PyInstaller --windowed builds (no console window) set
+    sys.stderr to None, which makes every sys.stderr.write(...)
+    raise 'NoneType has no attribute write'. This wrapper is the
+    drop-in replacement: all module-internal logging goes through
+    it so the frozen Quopus EXE doesn't crash when the
+    disassembler tries to log a cache miss or an asm error.
+    """
+    try:
+        s = _sys_module.stderr
+        if s is not None:
+            s.write(msg)
+            try:
+                s.flush()
+            except Exception:
+                pass
+    except Exception:
+        # Don't let logging blow up the caller.
+        pass
+
+
+def _safe_print_exc() -> None:
+    """traceback.print_exc(file=sys.stderr) equivalent that's
+    safe in frozen --windowed builds."""
+    try:
+        s = _sys_module.stderr
+        if s is None:
+            return
+        import traceback as _tb
+        _tb.print_exc(file=s)
+    except Exception:
+        pass
 
 
 # =====================================================================
@@ -3239,8 +3277,7 @@ def assemble(source: str, base_addr: int, source_dir=None):
                         except AssemblerError:
                             rendered.append(it)
                 msg = ' '.join(rendered)
-                import sys as _sys
-                _sys.stderr.write(f"[asm line {lineno}] {msg}\n")
+                _safe_stderr_write(f"[asm line {lineno}] {msg}\n")
             except Exception:
                 pass
             parsed.append((lineno, raw, 'blank', None, pc))
@@ -3251,8 +3288,7 @@ def assemble(source: str, base_addr: int, source_dir=None):
                 f"line {lineno}: user error: {msg}\n  > {raw}")
         if mn_lc in ('.warn', '.cwarn'):
             msg = args_str.strip().strip('"\'')
-            import sys as _sys
-            _sys.stderr.write(f"[asm WARNING line {lineno}] {msg}\n")
+            _safe_stderr_write(f"[asm WARNING line {lineno}] {msg}\n")
             parsed.append((lineno, raw, 'blank', None, pc))
             continue
         if mn_lc == '.assert':
@@ -3289,8 +3325,7 @@ def assemble(source: str, base_addr: int, source_dir=None):
                     cond = _eval_expr(items[0], symbols, pc)
                     if cond:
                         msg = items[1].strip().strip('"\'') if len(items) > 1 else 'warnif'
-                        import sys as _sys
-                        _sys.stderr.write(f"[asm WARNING line {lineno}] {msg}\n")
+                        _safe_stderr_write(f"[asm WARNING line {lineno}] {msg}\n")
                 except AssemblerError:
                     pass
             parsed.append((lineno, raw, 'blank', None, pc))
@@ -3841,19 +3876,16 @@ def cache_lookup(file_bytes, show_illegal):
     key = _cache_key(file_bytes, show_illegal)
     p = _cache_path(key)
     if not p.exists():
-        import sys as _sys
-        _sys.stderr.write(f"[cache] miss: {p.name}\n")
+        _safe_stderr_write(f"[cache] miss: {p.name}\n")
         return None
     try:
         with open(p, 'rb') as f:
             data = _pickle.load(f)
-        import sys as _sys
-        _sys.stderr.write(
+        _safe_stderr_write(
             f"[cache] hit: {p.name} ({p.stat().st_size} bytes)\n")
         return data['lines'], data['render_data']
     except Exception as e:
-        import sys as _sys
-        _sys.stderr.write(f"[cache] lookup corrupt at {p}: {e}\n")
+        _safe_stderr_write(f"[cache] lookup corrupt at {p}: {e}\n")
         try: p.unlink()
         except Exception: pass
         return None
@@ -3869,10 +3901,9 @@ def cache_store(file_bytes, show_illegal, lines, render_data):
                           'render_data': render_data}, f,
                          protocol=_pickle.HIGHEST_PROTOCOL)
     except Exception as e:
-        import sys as _sys
         import traceback as _tb
-        _sys.stderr.write(f"[cache] store failed at {p}: {e}\n")
-        _tb.print_exc(file=_sys.stderr)
+        _safe_stderr_write(f"[cache] store failed at {p}: {e}\n")
+        _safe_print_exc()
         raise
 
 
@@ -4415,8 +4446,7 @@ class C64DisasmViewer(QDialog):
             try:
                 file_bytes = self.path.read_bytes()
             except Exception as e:
-                import sys as _sys
-                _sys.stderr.write(f"[cache] left read_bytes failed: {e}\n")
+                _safe_stderr_write(f"[cache] left read_bytes failed: {e}\n")
                 file_bytes = None
         else:
             lines = self.edit_lines
@@ -4429,8 +4459,7 @@ class C64DisasmViewer(QDialog):
                     self.edit_path and self.edit_path.exists()) else self.path
                 file_bytes = target.read_bytes()
             except Exception as e:
-                import sys as _sys
-                _sys.stderr.write(f"[cache] right read_bytes failed: {e}\n")
+                _safe_stderr_write(f"[cache] right read_bytes failed: {e}\n")
                 file_bytes = None
         if cached_rd is not None:
             apply_render_data(cached_rd, doc)
@@ -4447,21 +4476,18 @@ class C64DisasmViewer(QDialog):
         if file_bytes is not None:
             try:
                 cache_store(file_bytes, self._show_illegal, lines, rd)
-                import sys as _sys
                 _p = _cache_path(_cache_key(file_bytes,
                                               self._show_illegal))
-                _sys.stderr.write(
+                _safe_stderr_write(
                     f"[cache] {side}: wrote {_p.name} "
                     f"({_p.stat().st_size} bytes)\n")
             except Exception as e:
-                import sys as _sys
                 import traceback as _tb
-                _sys.stderr.write(
+                _safe_stderr_write(
                     f"[cache] save failed for {side}: {e}\n")
-                _tb.print_exc(file=_sys.stderr)
+                _safe_print_exc()
         elif file_bytes is None:
-            import sys as _sys
-            _sys.stderr.write(f"[cache] {side}: skipped (no file bytes)\n")
+            _safe_stderr_write(f"[cache] {side}: skipped (no file bytes)\n")
 
     def _resolve_anchor(self, addr):
         """Map a target address to the closest disassembled instruction

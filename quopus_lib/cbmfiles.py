@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 19:24
+# date_time: 2026-06-05 19:59
 """
 cbmfiles - Commodore 8-bit disk image reader, viewer, and extractor.
 
@@ -4948,7 +4948,65 @@ class CbmDiskDialog(QDialog):
             act_vice.triggered.connect(
                 lambda: self._run_entry_in_vice(ent))
             menu.addAction(act_vice)
+            menu.addSeparator()
+            act_disasm = QAction(
+                f"Disassemble '{ent.name_ascii}'", menu)
+            act_disasm.setToolTip(
+                "Open this PRG in the 6502 / 6510 disassembler "
+                "without having to extract it first.")
+            act_disasm.triggered.connect(
+                lambda: self._disasm_entry(ent))
+            menu.addAction(act_disasm)
         menu.exec(QCursor.pos())
+
+    def _disasm_entry(self, ent: "CbmDirEntry"):
+        """Extract the entry's PRG bytes from the disk image,
+        write them to a temp .prg file and open the disassembler
+        on it. We use a temp file because C64DisasmViewer expects
+        a path - matches how 'Run in VICE' handles the same
+        problem.
+        """
+        try:
+            data = self.reader.extract(ent)
+        except Exception as e:
+            QMessageBox.warning(self, "Disassemble",
+                f"Could not extract '{ent.name_ascii}':\n{e}")
+            return
+        if not data:
+            QMessageBox.warning(self, "Disassemble",
+                f"'{ent.name_ascii}' is empty - nothing to "
+                "disassemble.")
+            return
+        # Write to a temp file under the system temp dir. Reuse
+        # the standard tempfile mkstemp so the path is unique and
+        # the OS will clean it up eventually. The disassembler
+        # window keeps the path open for its lifetime; once the
+        # user closes it the file is orphaned but harmless.
+        import tempfile, os
+        from pathlib import Path as _Path
+        safe_name = "".join(
+            c if c.isalnum() or c in "._-" else "_"
+            for c in ent.name_ascii) or "unnamed"
+        fd, tmp_path = tempfile.mkstemp(
+            prefix=f"quopus_disasm_{safe_name}_",
+            suffix=".prg")
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except Exception as e:
+            QMessageBox.warning(self, "Disassemble",
+                f"Could not write temp file:\n{e}")
+            return
+        try:
+            from .c64_disasm import C64DisasmViewer
+            dlg = C64DisasmViewer(_Path(tmp_path), self.window())
+            dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+            dlg.setWindowTitle(
+                f"Disassembler - {ent.name_ascii}")
+            dlg.show()
+        except Exception as e:
+            QMessageBox.warning(self, "Disassemble",
+                f"Could not open disassembler:\n{e}")
 
     def _run_entry_on_u64(self, ent: "CbmDirEntry"):
         """Extract the entry's PRG bytes from the disk image and

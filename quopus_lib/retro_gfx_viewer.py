@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 18:32
+# date_time: 2026-06-05 21:21
 """C64 graphics viewers: character set, Koala painter, Hi-Res bitmap.
 
 Drei Dialoge in einem Modul - alle Q nicht-modal, parent=lister, mit
@@ -38,6 +38,18 @@ from .config import scaled_font_px
 
 _FOLDER_BROWSE_EXTS = None
 
+# Module-level slot for a pre-scanned recursive file list. When
+# the launcher opens a folder recursively, it stashes the full
+# list here BEFORE creating the first viewer; init_folder_browser
+# in the viewer then picks it up instead of doing its own flat
+# scan. Without this hand-off the viewer would see only the
+# immediate folder of the first file - if the first decodable
+# file happened to be 4 levels deep in a sub-tree, Pfeil-Rechts
+# would walk a 1-file directory and the user would think the
+# recursive scan was broken.
+_PRESCANNED_FILES = None
+_PRESCANNED_ROOT = None
+
 
 def _get_browse_extensions():
     """Liste aller Extensions die der Retro GFX Viewer kennt - native
@@ -52,23 +64,86 @@ def _get_browse_extensions():
     return _FOLDER_BROWSE_EXTS
 
 
-def scan_folder_for_gfx(folder):
+def scan_folder_for_gfx(folder, recursive=False, progress_cb=None):
     """Liste alle viewable Files in folder, sortiert nach name.
-    Returnt absolute Pfade."""
+    Returnt absolute Pfade.
+
+    recursive=False: nur das gegebene Verzeichnis scannen (Default).
+    recursive=True: alle Unterverzeichnisse mit-durchsuchen via
+    os.walk. Sortierung danach immer noch case-insensitive basename,
+    damit der File-Browser eine stabile Reihenfolge hat egal aus
+    welchem Sub-Folder die Files kommen. Verzeichnisse die mit '.'
+    beginnen werden uebersprungen (kein .git oder .venv im Scan).
+
+    progress_cb: optional callable that receives (n_found, dir)
+    after every subfolder during a recursive scan. Used by the
+    launcher to update its scan-status label live so the user
+    sees progress instead of staring at a frozen dialog. The
+    callback is responsible for calling processEvents() if it
+    wants the UI to repaint - we don't do that here because it
+    would couple the scan to Qt.
+    """
     if not os.path.isdir(folder):
         return []
     exts = _get_browse_extensions()
     out = []
-    try:
-        for name in os.listdir(folder):
-            path = os.path.join(folder, name)
-            if not os.path.isfile(path):
-                continue
-            ext = os.path.splitext(name)[1].lower().lstrip('.')
-            if ext in exts:
-                out.append(path)
-    except OSError:
-        return []
+    if recursive:
+        # os.walk's onerror callback fires for each unreadable
+        # directory. We ignore them - one locked subfolder
+        # shouldn't abort the whole scan, the user just wants to
+        # see whatever IS readable. (The old code's blanket
+        # try/except around the whole loop meant a single
+        # permission glitch produced "1 file found" symptoms.)
+        def _walk_err(_e):
+            pass
+        # Progress callback granularity: per-folder is too coarse
+        # for big flat directories (1000 files in one folder
+        # would show no progress at all until the whole folder
+        # was done). Also fire every N files so the user sees
+        # the counter move even within a single directory.
+        PROGRESS_EVERY = 50
+        next_progress_at = PROGRESS_EVERY
+        for root, dirs, files in os.walk(folder, onerror=_walk_err):
+            # Drop hidden dirs in-place so walk doesn't recurse
+            dirs[:] = [d for d in dirs if not d.startswith('.')]
+            for name in files:
+                try:
+                    ext = os.path.splitext(
+                        name)[1].lower().lstrip('.')
+                    if ext in exts:
+                        out.append(os.path.join(root, name))
+                        # Mid-folder progress tick
+                        if (progress_cb is not None
+                                and len(out) >= next_progress_at):
+                            try:
+                                progress_cb(len(out), root)
+                            except Exception:
+                                pass
+                            next_progress_at = (
+                                len(out) + PROGRESS_EVERY)
+                except Exception:
+                    # Per-file errors (weird encodings, etc.)
+                    # also shouldn't abort the scan.
+                    continue
+            # Per-directory progress tick (covers the case
+            # where the directory had no matching files but the
+            # user still wants to see we're working).
+            if progress_cb is not None:
+                try:
+                    progress_cb(len(out), root)
+                except Exception:
+                    pass
+    else:
+        try:
+            for name in os.listdir(folder):
+                path = os.path.join(folder, name)
+                if not os.path.isfile(path):
+                    continue
+                ext = os.path.splitext(name)[1].lower().lstrip('.')
+                if ext in exts:
+                    out.append(path)
+        except OSError:
+            return []
     out.sort(key=lambda p: os.path.basename(p).lower())
     return out
 
@@ -90,42 +165,101 @@ class FolderBrowserMixin:
 
     def init_folder_browser(self, current_path):
         """Initialisiert die Folder-Liste. current_path ist das
-        aktuell geoeffnete File."""
+        aktuell geoeffnete File.
+
+        If the launcher already did a recursive scan and stashed
+        the file list in the module-level _PRESCANNED_FILES slot,
+        re-use it. Otherwise fall back to a flat scan of the
+        file's immediate folder (which is the right thing when
+        the viewer was launched on a single file rather than via
+        Open Folder).
+        """
+        global _PRESCANNED_FILES, _PRESCANNED_ROOT
         folder = os.path.dirname(current_path)
-        self._dir_files = scan_folder_for_gfx(folder)
+        used_prescan = False
+        if (_PRESCANNED_FILES is not None
+                and current_path in _PRESCANNED_FILES):
+            # Hand off the recursive list - use the whole tree
+            # for navigation. Take a copy so later launcher runs
+            # don't mutate this viewer's state.
+            self._dir_files = list(_PRESCANNED_FILES)
+            self._dir_folder = _PRESCANNED_ROOT or folder
+            used_prescan = True
+            # Consume the slot so subsequent single-file opens
+            # don't accidentally inherit this list.
+            _PRESCANNED_FILES = None
+            _PRESCANNED_ROOT = None
+        else:
+            self._dir_files = scan_folder_for_gfx(folder)
+            self._dir_folder = folder
         try:
             self._dir_index = self._dir_files.index(current_path)
         except ValueError:
             self._dir_files.insert(0, current_path)
             self._dir_index = 0
-        self._dir_folder = folder
 
     def _nav_relative(self, delta):
+        """Navigate to a file 'delta' positions away in the
+        directory listing. If that file fails to decode (RECOIL
+        error, corrupt file, etc.), keep advancing in the same
+        direction until either a good file shows up or we run
+        out of files. This way the user can blast through a
+        broken folder with the Right arrow without the browser
+        stopping at every bad PRG.
+        """
         if not getattr(self, '_dir_files', None):
             return
-        new_idx = max(0, min(len(self._dir_files) - 1,
-                                  self._dir_index + delta))
-        if new_idx == self._dir_index:
+        step = 1 if delta > 0 else -1 if delta < 0 else 0
+        if step == 0:
             return
-        self._dir_index = new_idx
-        path = self._dir_files[new_idx]
-        try:
-            self.reload_path(path)
-        except Exception as e:
+        # First jump by the full delta, then on failure keep
+        # going by one in the same direction.
+        target = max(0, min(len(self._dir_files) - 1,
+                              self._dir_index + delta))
+        if target == self._dir_index:
+            return
+        idx = target
+        first_failed = None
+        while True:
+            path = self._dir_files[idx]
+            try:
+                self.reload_path(path)
+                self._dir_index = idx
+                return
+            except Exception as e:
+                if first_failed is None:
+                    first_failed = (idx, path, e)
+                # Try the next one in the same direction
+                next_idx = idx + step
+                if next_idx < 0 or next_idx >= len(self._dir_files):
+                    # Hit the end - bail with whatever failure
+                    # we saw first.
+                    break
+                idx = next_idx
+        # We exhausted the direction without finding a good file.
+        # Put the title in error state on the first failure so
+        # the user sees what went wrong.
+        if first_failed is not None:
+            f_idx, f_path, f_err = first_failed
+            self._dir_index = f_idx
             import traceback
             traceback.print_exc()
             self.setWindowTitle(
-                f"[error] {os.path.basename(path)}: {e}")
+                f"[error] {os.path.basename(f_path)}: {f_err}")
 
     def _nav_first(self):
         if getattr(self, '_dir_files', None):
-            self._dir_index = 0
-            self.reload_path(self._dir_files[0])
+            # Jump to absolute first then let _nav_relative
+            # skip forward through any bad files.
+            self._dir_index = -1  # so step=+1 lands on 0
+            self._nav_relative(1)
 
     def _nav_last(self):
         if getattr(self, '_dir_files', None):
-            self._dir_index = len(self._dir_files) - 1
-            self.reload_path(self._dir_files[-1])
+            # Jump to absolute last then let _nav_relative
+            # skip backward through any bad files.
+            self._dir_index = len(self._dir_files)
+            self._nav_relative(-1)
 
     def handle_arrow_key(self, event):
         """Aufruf aus keyPressEvent der Subklasse. Returnt True wenn
@@ -1671,17 +1805,76 @@ def show_retro_gfx_viewer(path, parent=None):
         # ersten an, User kann zum 2. mit Extension Tricks navigieren
         dlg = CharsetViewer(path, parent)
     else:
-        # Fallback: nach Dateiname raten oder Auswahl anzeigen
-        QMessageBox.information(
-            parent, "C64 GFX",
-            f"Cannot auto-detect format for {os.path.basename(path)} "
-            f"(size: {size} bytes).\n\n"
-            f"Expected sizes:\n"
-            f"  Charset: 2048 / 2050 bytes\n"
-            f"  Hi-Res:  9000 / 9002 bytes\n"
-            f"  Koala:   10003 bytes\n\n"
-            f"Trying charset viewer anyway...")
-        dlg = CharsetViewer(path, parent)
+        # No C64 match. Before falling back to the charset viewer
+        # (which will look like garbage for non-C64 formats),
+        # try a native decoder by extension/content sniff and
+        # then RECOIL. This is what the Launcher's auto-detect
+        # path does and it covers Amiga .pac, Atari .pi1/.pi2,
+        # ZX .scr and 500+ other retro formats.
+        from .retro_gfx_decoders import (
+            detect_format, can_recoil_handle, RecoilBackend)
+        key = detect_format(path)
+        if key is not None:
+            dlg = BitmapViewer(path, key, parent)
+        elif can_recoil_handle(path):
+            backend = RecoilBackend()
+            if backend.available:
+                try:
+                    png_path = backend.decode_to_png(path)
+                    ext_label = ext.lstrip('.').upper() or "?"
+                    dlg = RecoilViewer(
+                        path, png_path, parent,
+                        format_name=f"RECOIL: .{ext_label}")
+                except Exception as e:
+                    # RECOIL knows the extension but can't decode
+                    # this specific file. Common reason: the
+                    # extension is shared by multiple unrelated
+                    # formats (e.g. .pac is Atari STAD AND many
+                    # game-specific packed data containers). Tell
+                    # the user clearly, and offer the hex viewer
+                    # so they can at least inspect the bytes.
+                    short_err = str(e).split('\n')[0]
+                    ret = QMessageBox.question(
+                        parent, "Retro GFX",
+                        f"{os.path.basename(path)} could not be "
+                        f"decoded by RECOIL.\n\n"
+                        f"RECOIL recognises the .{ext.lstrip('.')} "
+                        f"extension but this specific file "
+                        f"appears to be a different format "
+                        f"(possibly a game-internal packed data "
+                        f"file, not retro graphics).\n\n"
+                        f"Details: {short_err}\n\n"
+                        f"Open with hex viewer instead?",
+                        QMessageBox.StandardButton.Yes
+                        | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No)
+                    if ret == QMessageBox.StandardButton.Yes:
+                        try:
+                            from .readers import HexReader
+                            dlg = HexReader(path, parent)
+                        except Exception:
+                            return False
+                    else:
+                        return False
+            else:
+                QMessageBox.warning(
+                    parent, "Retro GFX",
+                    f"{os.path.basename(path)} needs recoil2png "
+                    "but it is not installed.\n\n"
+                    "Download from https://recoil.sourceforge.net/ "
+                    "and set the path under Configure > Tools.")
+                return False
+        else:
+            # Truly unknown - charset viewer as last resort
+            QMessageBox.information(
+                parent, "Retro GFX",
+                f"Cannot auto-detect format for "
+                f"{os.path.basename(path)} "
+                f"(size: {size} bytes, ext: {ext or 'none'}).\n\n"
+                f"No native decoder matches and RECOIL doesn't "
+                f"recognize this extension either.\n\n"
+                f"Trying charset viewer anyway...")
+            dlg = CharsetViewer(path, parent)
 
     dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
     dlg.show()
@@ -1798,6 +1991,19 @@ class RetroGfxLauncherDialog(QDialog):
             "  Home/End first / last file")
         self.btn_open_folder.clicked.connect(self._on_open_folder)
         bar.addWidget(self.btn_open_folder)
+        # Optional: after a successful folder scan, push the file
+        # list into the opposite Quopus panel as a flat branch
+        # view. So you can scroll through the gfx files in the
+        # other lister, do bulk actions on them, tag/copy etc.
+        # Off by default - opt-in.
+        from PyQt6.QtWidgets import QCheckBox
+        self.chk_feed_other = QCheckBox(
+            "Send list to other panel")
+        self.chk_feed_other.setToolTip(
+            "After the folder scan, push the gfx files as a flat "
+            "branch view into the opposite Quopus lister. Press "
+            "Ctrl+B in that panel to leave branch mode.")
+        bar.addWidget(self.chk_feed_other)
         bar.addStretch(1)
         btn_cfg = QPushButton("recoil2png path...")
         btn_cfg.clicked.connect(self._configure_recoil)
@@ -1824,6 +2030,16 @@ class RetroGfxLauncherDialog(QDialog):
         hbar.addStretch(1)
         hist_l.addLayout(hbar)
         layout.addWidget(hist_box, 1)
+
+        # Scan status line - updated live during recursive
+        # folder scans so the user sees "1234 files found..."
+        # tick up instead of staring at a frozen dialog. Empty
+        # when no scan is in flight.
+        self.lbl_scan_status = QLabel("")
+        self.lbl_scan_status.setStyleSheet(
+            "QLabel { color: #444; padding: 2px 4px; "
+            "font-style: italic; }")
+        layout.addWidget(self.lbl_scan_status)
 
         # Close
         btn_close = QPushButton("Close")
@@ -1861,7 +2077,11 @@ class RetroGfxLauncherDialog(QDialog):
         return f"All retro graphics ({wildcards});;All Files (*)"
 
     def _on_open(self):
-        """File-Dialog mit Format-spezifischem Filter."""
+        """File-Dialog mit Format-spezifischem Filter.
+
+        Start folder = active Quopus panel path if available,
+        else the viewer's _last_dir, else QFileDialog default.
+        Same priority as _on_open_folder."""
         fmt = self._selected_format()
         all_gfx = self._build_recoil_filter()
         filters = {
@@ -1869,7 +2089,7 @@ class RetroGfxLauncherDialog(QDialog):
             "recoil":  all_gfx,
             "charset": "C64 Charset (*.chr *.fnt *.64c *.bin);;All Files (*)",
         }.get(fmt, all_gfx)
-        start_dir = type(self)._last_dir or ""
+        start_dir = self._panel_start_dir()
         path, _ = QFileDialog.getOpenFileName(
             self, "Open retro graphics file", start_dir, filters)
         if not path:
@@ -1877,23 +2097,267 @@ class RetroGfxLauncherDialog(QDialog):
         type(self)._last_dir = os.path.dirname(path)
         self._open_path(path, fmt)
 
+    def _feed_files_to_other_panel(self, files, root):
+        """Push the scanned file list into the opposite Quopus
+        lister as a branch view. The other lister shows the
+        files with paths relative to root, just like Ctrl+B
+        does for a directory walk. The user can scroll through
+        them, tag, copy etc. - all normal Quopus operations
+        work because the files are real DirEntry objects.
+
+        Pressing Ctrl+B in the other panel exits branch mode
+        and goes back to whatever folder it was showing before.
+        """
+        try:
+            mw = self.parent()
+            if mw is None or not hasattr(mw, "_active_lister"):
+                return
+            _active, other = mw._active_lister()
+            if other is None:
+                return
+            from .dirmodel import DirEntry
+            import os as _os
+            entries = []
+            for fp in files:
+                try:
+                    st = _os.stat(fp)
+                except OSError:
+                    continue
+                # Show paths relative to the scanned root - so
+                # "bonus/spread/bg.iff" instead of an absolute
+                # path. Matches Ctrl+B branch view formatting.
+                try:
+                    rel = _os.path.relpath(fp, root)
+                except ValueError:
+                    # Different drives on Windows - fall back to
+                    # the basename so something useful shows up.
+                    rel = _os.path.basename(fp)
+                entries.append(DirEntry(
+                    path=fp,
+                    name=rel,
+                    is_dir=False,
+                    size=st.st_size,
+                    mtime=st.st_mtime,
+                ))
+            if not entries:
+                return
+            # Mark branch mode so refresh() won't blow it away
+            # and so Ctrl+B knows to exit cleanly.
+            other._branch_mode = True
+            other.model.set_entries(entries)
+            # Quick visible feedback in the main status bar so
+            # the user knows what just happened.
+            try:
+                mw.lbl_status.setText(
+                    f" Branch view: {len(entries)} file(s) under "
+                    f"{root}  (Ctrl+B to exit) ")
+            except Exception:
+                pass
+        except Exception:
+            # Silent on failure - the viewer still opens normally
+            # if we can't reach the other panel for any reason.
+            pass
+
+    def _panel_start_dir(self):
+        """Helper: return the active Quopus lister's current
+        path if reachable, fallback to the viewer's _last_dir.
+        Used by both the Open file and Open folder dialogs so
+        they start where the user is actually browsing."""
+        try:
+            mw = self.parent()
+            if mw is not None and hasattr(mw, "_active_lister"):
+                active, _other = mw._active_lister()
+                cur = getattr(active, "current_path", None)
+                if cur is not None:
+                    cur_str = str(cur)
+                    if os.path.isdir(cur_str):
+                        return cur_str
+        except Exception:
+            pass
+        return type(self)._last_dir or ""
+
     def _on_open_folder(self):
         """Folder-Dialog: zeigt das erste Bild im Ordner, dann
-        Pfeiltasten-Navigation im Viewer."""
-        start_dir = type(self)._last_dir or ""
+        Pfeiltasten-Navigation im Viewer.
+
+        Findet der flache Scan nichts, fragen wir nach einem
+        rekursiven Scan ueber Unterverzeichnissen. Damit kann der
+        User auf einen Parent-Folder zeigen ("alle meine C64
+        Demos") und der Browser sammelt alle Charsets / Koalas
+        / Hi-Res aus den Sub-Folders selbststaendig.
+
+        Start folder priority:
+        1. The active Quopus lister panel's current path (so the
+           user clicks the action button and immediately sees the
+           folder they were just browsing).
+        2. The viewer's last_dir from a previous run.
+        3. The user's home dir (QFileDialog default).
+        """
+        start_dir = self._panel_start_dir()
         folder = QFileDialog.getExistingDirectory(
             self, "Open folder of retro graphics", start_dir)
         if not folder:
+            self.lbl_scan_status.setText("")
             return
         type(self)._last_dir = folder
+        # Clear any previous scan summary before starting fresh.
+        self.lbl_scan_status.setText(f"Scanning {folder}...")
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
         files = scan_folder_for_gfx(folder)
+        if files:
+            # Update label so user sees the flat hit count.
+            self.lbl_scan_status.setText(
+                f"Scan complete: {len(files)} file(s) "
+                f"found in {folder}")
         if not files:
-            QMessageBox.information(
+            # Nothing in this folder directly - offer recursive
+            ret = QMessageBox.question(
                 self, "Retro GFX",
-                f"No viewable retro graphics files found in:\n{folder}")
-            return
-        # Erstes File oeffnen - Auto-detect
-        self._open_path(files[0], self._selected_format())
+                "No retro graphics in this folder directly.\n\n"
+                f"{folder}\n\n"
+                "Scan all subfolders recursively?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+            # Recursive scan can take a while on big trees;
+            # change the cursor so the user knows something is
+            # happening, and stream the running count to the
+            # scan-status label so they see progress live.
+            from PyQt6.QtCore import Qt as _Qt, QEventLoop
+            from PyQt6.QtWidgets import QApplication
+            QApplication.setOverrideCursor(_Qt.CursorShape.WaitCursor)
+
+            def _progress(n_found, current_dir):
+                # Keep the message short - the dir path can be
+                # long, the basename is enough to give the user
+                # a sense of where we are right now.
+                base = os.path.basename(
+                    current_dir.rstrip(os.sep)) or current_dir
+                self.lbl_scan_status.setText(
+                    f"Scanning: {n_found} file(s) found... "
+                    f"({base})")
+                # setText alone is not enough - Qt batches paint
+                # events and won't flush them until the call
+                # stack returns to the event loop. We force an
+                # immediate repaint of the label and then pump
+                # the event loop so any deferred work (cursor
+                # changes, window-system messages) drains too.
+                # Without repaint() Mario reports the counter
+                # appears frozen at the start value even though
+                # the scan is making progress underneath.
+                self.lbl_scan_status.repaint()
+                QApplication.processEvents(
+                    QEventLoop.ProcessEventsFlag.AllEvents, 5)
+
+            try:
+                self.lbl_scan_status.setText("Scanning...")
+                QApplication.processEvents()
+                files = scan_folder_for_gfx(
+                    folder, recursive=True,
+                    progress_cb=_progress)
+            finally:
+                QApplication.restoreOverrideCursor()
+            # Leave a summary line up so the user can see the
+            # final count after the scan completes.
+            self.lbl_scan_status.setText(
+                f"Scan complete: {len(files)} file(s) found "
+                f"under {folder}")
+            if not files:
+                QMessageBox.information(
+                    self, "Retro GFX",
+                    "No viewable retro graphics files found "
+                    f"in:\n{folder}\nor any of its subfolders.")
+                return
+        # Open the first file that actually decodes. Skipping
+        # broken / unsupported files here means the user doesn't
+        # have to click "OK" through a stack of error dialogs
+        # before they see any picture. Pfeiltasten-Nav also
+        # skips broken files on the fly, so once one good
+        # picture is up the rest is smooth.
+        #
+        # Stash the (possibly recursive) file list in the module
+        # slot so the viewer that's about to open can pick it up
+        # in its init_folder_browser - otherwise Pfeil-Rechts
+        # would only walk the immediate folder of the first file.
+        global _PRESCANNED_FILES, _PRESCANNED_ROOT
+        _PRESCANNED_FILES = files
+        _PRESCANNED_ROOT = folder
+        # If the user ticked "Send list to other panel", push
+        # the scanned files into the opposite Quopus lister as
+        # a flat branch view. Do this BEFORE opening the viewer
+        # so the listing is already there when the user looks.
+        if self.chk_feed_other.isChecked():
+            self._feed_files_to_other_panel(files, folder)
+        fmt = self._selected_format()
+        opened = False
+        last_err = None
+        for path in files:
+            try:
+                self._open_path_silent(path, fmt)
+                opened = True
+                break
+            except Exception as e:
+                last_err = e
+                continue
+        if not opened:
+            # Clear the slot - the viewer never picked it up.
+            _PRESCANNED_FILES = None
+            _PRESCANNED_ROOT = None
+            # Every file in the folder failed - show one summary
+            # message instead of one per file.
+            QMessageBox.warning(
+                self, "Retro GFX",
+                f"None of the {len(files)} files could be "
+                f"decoded.\nLast error:\n{last_err}")
+
+    def _open_path_silent(self, path, fmt):
+        """Like _open_path but raises on failure instead of
+        showing QMessageBox - lets the caller loop through
+        candidates and decide when to surface an error."""
+        if fmt == "charset":
+            dlg = CharsetViewer(path, self)
+        elif fmt == "recoil":
+            dlg = self._open_via_recoil_silent(path)
+        elif fmt == "auto":
+            from .retro_gfx_decoders import (
+                detect_format, can_recoil_handle)
+            key = detect_format(path)
+            if key is not None:
+                dlg = BitmapViewer(path, key, self)
+                fmt = key
+            else:
+                size = os.path.getsize(path)
+                if size in (2048, 2050, 4096, 4098):
+                    dlg = CharsetViewer(path, self)
+                    fmt = "charset"
+                elif can_recoil_handle(path):
+                    dlg = self._open_via_recoil_silent(path)
+                    fmt = "recoil"
+                else:
+                    dlg = KoalaViewer(path, self)
+                    fmt = "koala-fallback"
+        else:
+            dlg = BitmapViewer(path, fmt, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.show()
+        self._add_to_history(path, fmt)
+
+    def _open_via_recoil_silent(self, path):
+        """Like _open_via_recoil but raises on failure rather
+        than popping a dialog. Used by the silent loop in
+        _on_open_folder."""
+        from .retro_gfx_decoders import RecoilBackend
+        backend = RecoilBackend()
+        if not backend.available:
+            raise RuntimeError("recoil2png not available")
+        png_path = backend.decode_to_png(path)
+        import os as _os
+        ext = _os.path.splitext(path)[1].lower().lstrip('.').upper()
+        return RecoilViewer(path, png_path, self,
+                              format_name=f"RECOIL: .{ext}")
 
     def _open_path(self, path, fmt):
         """Oeffne path im gewaehlten Format.
