@@ -1,4 +1,4 @@
-# date_time: 2026-06-04 09:41
+# date_time: 2026-06-06 01:24
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -70,6 +70,148 @@ CACHE_DIR = SCRIPT_DIR / "cache"
 # mode that path is identical to SCRIPT_DIR/fonts so we don't need
 # special-casing elsewhere.
 FONTS_DIR = BUNDLE_DIR / "fonts"
+
+
+def get_appdata_config_dir():
+    """Return a cross-platform user-level config directory for
+    Quopus, separate from the per-install CONFIG_DIR.
+
+    Windows: %APPDATA%\\Quopus\\config
+    macOS:   ~/Library/Application Support/Quopus/config
+    Linux:   $XDG_CONFIG_HOME/Quopus/config (or ~/.config/...)
+
+    This lets a freshly-downloaded Quopus EXE find an existing
+    user configuration even when it lives in a different folder
+    than the previous build. Used as a sync target by
+    mirror_config_to_appdata() and a recovery source by the
+    startup check in MainWindow.
+
+    Returns None if we can't determine a path (truly exotic
+    environments) - caller treats that as "no mirror available".
+
+    On Windows we explicitly try the lowercase 'quopus' folder
+    as well as the canonical 'Quopus'. Even though NTFS is
+    case-insensitive, some users end up with a lowercase folder
+    from a manual file-explorer rename or an older Quopus
+    version, and Path.exists() may report differently across
+    drives or via network shares. So we probe both spellings
+    and prefer whichever actually has files."""
+    import sys as _sys, os as _os
+    if _sys.platform == "win32":
+        base = (_os.environ.get("APPDATA")
+                or _os.environ.get("LOCALAPPDATA"))
+        if not base:
+            return None
+        # Probe both spellings - return whichever already
+        # exists with files, falling back to the canonical
+        # 'Quopus' when nothing is present so writes go to a
+        # consistent path.
+        canonical = Path(base) / "Quopus" / "config"
+        lowercase = Path(base) / "quopus" / "config"
+        for candidate in (canonical, lowercase):
+            try:
+                if candidate.exists():
+                    for fp in candidate.rglob("*"):
+                        if fp.is_file():
+                            return candidate
+            except OSError:
+                continue
+        return canonical
+    if _sys.platform == "darwin":
+        return (Path.home() / "Library" / "Application Support"
+                / "Quopus" / "config")
+    # Linux / other Unix: XDG Base Directory spec
+    base = _os.environ.get("XDG_CONFIG_HOME")
+    if base:
+        return Path(base) / "Quopus" / "config"
+    return Path.home() / ".config" / "Quopus" / "config"
+
+
+def mirror_config_to_appdata():
+    """Copy the entire local CONFIG_DIR contents to the AppData
+    mirror. Used at Quopus shutdown so the user's settings are
+    preserved when they later install a new Quopus EXE in a
+    different folder.
+
+    Best-effort: returns (success, file_count). Failures are
+    silent (returns False, partial count) because mirroring is
+    a convenience feature - we never want it to block app
+    shutdown."""
+    import shutil
+    src = CONFIG_DIR
+    dst = get_appdata_config_dir()
+    if dst is None or not src.exists():
+        return (False, 0)
+    count = 0
+    try:
+        dst.mkdir(parents=True, exist_ok=True)
+        for fp in src.rglob("*"):
+            if not fp.is_file():
+                continue
+            rel = fp.relative_to(src)
+            target = dst / rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(fp, target)
+                count += 1
+            except OSError:
+                # Skip individual file errors (locked file etc.)
+                # so a broken file doesn't stop the mirror.
+                continue
+        return (True, count)
+    except Exception:
+        return (False, count)
+
+
+def has_appdata_config_with_files():
+    """True if the AppData mirror exists and has at least one
+    real config file - used by the startup check to decide
+    whether to offer "import from AppData?"."""
+    dst = get_appdata_config_dir()
+    if dst is None or not dst.exists():
+        return False
+    for fp in dst.rglob("*"):
+        if fp.is_file():
+            return True
+    return False
+
+
+def is_local_config_empty():
+    """True if the local config is in a fresh-install state -
+    meaning the main quopus.cfg file is absent.
+
+    We deliberately don't look at cache files, log files,
+    empty subdirs, .gitkeep or whatever else might be sitting
+    in CONFIG_DIR after a fresh install - those don't carry
+    user settings. The marker that user-meaningful state
+    exists is the presence of quopus.cfg. Without it, every
+    other file in CONFIG_DIR is by definition either cache or
+    a default that will be regenerated."""
+    return not CONFIG_FILE.is_file()
+
+
+def restore_from_appdata():
+    """Copy every file from the AppData mirror into the local
+    CONFIG_DIR. Used by the startup check when the user opts in
+    to importing an existing config. Returns the number of
+    files copied. Raises on failure so the caller can show an
+    error dialog (unlike mirror_config_to_appdata which silently
+    swallows errors)."""
+    import shutil
+    src = get_appdata_config_dir()
+    if src is None or not src.exists():
+        return 0
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    count = 0
+    for fp in src.rglob("*"):
+        if not fp.is_file():
+            continue
+        rel = fp.relative_to(src)
+        target = CONFIG_DIR / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fp, target)
+        count += 1
+    return count
 
 
 def _migrate_legacy_config():

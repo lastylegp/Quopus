@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# date_time: 2026-05-27 16:20
+# date_time: 2026-06-06 01:31
 """
 Quopus Commander - PC file manager inspired by Directory Opus 4
 
@@ -492,6 +492,63 @@ def _raise_fd_limit():
 
 def main():
     _raise_fd_limit()
+
+    # AppData recovery check - MUST run before ANY other code
+    # touches CONFIG_DIR, because load_config() and license
+    # validation both create the local config folder and write
+    # default files into it. Once that happens, the local
+    # config no longer looks "empty" and the AppData mirror is
+    # ignored. So we run our own QApplication-bootstrapped
+    # check here, ask the user if they want to import, and only
+    # then continue with the normal startup flow.
+    #
+    # We have to spin up a temporary QApplication because we
+    # need QMessageBox to show the prompt - the real one comes
+    # later. Creating two QApplications is fine: the first is
+    # discarded once we're past the recovery check.
+    try:
+        from quopus_lib.config import (
+            is_local_config_empty,
+            has_appdata_config_with_files,
+            restore_from_appdata,
+            get_appdata_config_dir,
+        )
+        if (is_local_config_empty()
+                and has_appdata_config_with_files()):
+            # Need a QApplication for the dialog. Create a
+            # disposable one here; the real one is built a few
+            # lines down.
+            from PyQt6.QtWidgets import QApplication, QMessageBox
+            tmp_app = QApplication.instance()
+            if tmp_app is None:
+                tmp_app = QApplication(sys.argv)
+            appdata_path = get_appdata_config_dir()
+            ret = QMessageBox.question(
+                None, "Quopus",
+                f"Found existing Quopus Config.\n\n"
+                f"Import Settings from\n{appdata_path} ?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes)
+            if ret == QMessageBox.StandardButton.Yes:
+                try:
+                    n = restore_from_appdata()
+                    QMessageBox.information(
+                        None, "Quopus",
+                        f"Imported {n} file(s) from AppData.\n\n"
+                        f"Quopus will now start with your "
+                        f"previous settings.")
+                except Exception as e:
+                    QMessageBox.warning(
+                        None, "Quopus",
+                        f"Could not import AppData config:\n{e}"
+                        f"\n\nQuopus will continue with defaults.")
+    except Exception as e:
+        # Any error in the AppData check is non-fatal - fall
+        # through to normal startup. Print so the issue is
+        # visible to anyone running Quopus from a terminal.
+        print(f"[startup] AppData recovery check skipped: {e}")
+
     # Load user-installed custom modules BEFORE constructing the
     # main window. Plugins might want to register themselves under
     # action_names that the action-button grid references right
