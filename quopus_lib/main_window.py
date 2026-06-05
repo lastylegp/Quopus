@@ -1,4 +1,4 @@
-# date_time: 2026-06-04 09:41
+# date_time: 2026-06-05 17:43
 """
 Main window layout:
 
@@ -3303,15 +3303,59 @@ class _ButtonAssignEditDialog(QDialog):
         # selection later)
         _on_action_change(self._action_key)
 
-        hint = QLabel(
+        hint_text = (
             "  Tokens for Param:  %f = first file, %F = all selected, "
             "%n = basename, %p = current dir, %d = other-side dir\n"
             "  Extension gate:  {file|crt,prg} - the action only "
             "runs if every selected file ends with one of those "
             "extensions (case-insensitive). On pass it's rewritten "
             "to %f so use it ANYWHERE you'd use %f.")
-        hint.setStyleSheet(f"QLabel {{ color: #444; font-size: {scaled_font_px(10)}px; }}")
+        hint = QLabel(hint_text)
+        # Set the font via QFont directly (not via stylesheet) so
+        # QFontMetrics below reflects the actual rendered size.
+        # setStyleSheet does not update QLabel.font() - it only
+        # changes the painter at draw time - so a stylesheet
+        # font-size declaration would silently desync from what
+        # QFontMetrics sees, and our wrapped-height calculation
+        # would be wrong.
+        from PyQt6.QtGui import QFont
+        hint_font = QFont(hint.font())
+        hint_font.setPixelSize(scaled_font_px(10))
+        hint.setFont(hint_font)
+        hint.setStyleSheet("QLabel { color: #444; }")
         hint.setWordWrap(True)
+        # In a QFormLayout, a word-wrapped QLabel typically gets
+        # only one line's worth of height reserved - everything
+        # below that overlaps the next form row. sizeHint() does
+        # not help because Qt evaluates it before the label has
+        # a width to wrap against.
+        #
+        # Solution: compute the actual rendered height by hand
+        # using QFontMetrics.boundingRect() with an estimate of
+        # the column width the label will occupy. The dialog has
+        # setMinimumSize(960, 660), so the form's value column is
+        # roughly 720px after subtracting the label column and
+        # margins. We use a conservative width so the calculated
+        # height accommodates narrower windows too.
+        from PyQt6.QtGui import QFontMetrics
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtWidgets import QSizePolicy
+        fm = QFontMetrics(hint.font())
+        # Estimated width of the value column when the dialog is
+        # at its declared minimum size. 600px is intentionally
+        # narrow so the calculated height has some safety margin
+        # if the user shrinks the dialog further.
+        wrap_width = 600
+        br = fm.boundingRect(
+            0, 0, wrap_width, 10000,
+            int(_Qt.TextFlag.TextWordWrap), hint_text)
+        # +8px gives the text a little breathing room and matches
+        # how QLabel itself pads its content vertically.
+        needed_h = br.height() + 8
+        hint.setMinimumHeight(needed_h)
+        hint.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.MinimumExpanding)
         form.addRow("", hint)
 
         # Per-button options for actions that spawn an external
