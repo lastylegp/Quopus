@@ -1,4 +1,4 @@
-# date_time: 2026-06-05 21:21
+# date_time: 2026-06-05 21:39
 """C64 graphics viewers: character set, Koala painter, Hi-Res bitmap.
 
 Drei Dialoge in einem Modul - alle Q nicht-modal, parent=lister, mit
@@ -2847,6 +2847,37 @@ class RecoilViewer(QDialog, FolderBrowserMixin):
         btn_fit = QPushButton("Fit 1:1")
         btn_fit.clicked.connect(lambda: self._set_zoom(1))
         bar.addWidget(btn_fit)
+        # Slideshow controls. Play toggles auto-advance, delay
+        # SpinBox sets the seconds between images. Persists in
+        # the dialog instance, not in the global config - that
+        # way different RECOIL viewer windows can have different
+        # speeds if the user has multiple open.
+        from PyQt6.QtWidgets import QSpinBox
+        from PyQt6.QtCore import QTimer
+        self._slide_delay_s = 3
+        self._slideshow_timer = QTimer(self)
+        self._slideshow_timer.setSingleShot(False)
+        self._slideshow_timer.timeout.connect(
+            self._on_slideshow_tick)
+        self.btn_slideshow = QPushButton("▶ Slideshow")
+        self.btn_slideshow.setToolTip(
+            "Auto-advance through the file list every N seconds. "
+            "Click again to pause.")
+        self.btn_slideshow.setCheckable(True)
+        self.btn_slideshow.clicked.connect(
+            self._toggle_slideshow)
+        bar.addWidget(self.btn_slideshow)
+        bar.addWidget(QLabel("delay:"))
+        self.sb_slide_delay = QSpinBox()
+        self.sb_slide_delay.setRange(1, 300)
+        self.sb_slide_delay.setSuffix(" s")
+        self.sb_slide_delay.setValue(self._slide_delay_s)
+        self.sb_slide_delay.setToolTip(
+            "Seconds between slides (1-300). Changes apply "
+            "immediately to a running slideshow.")
+        self.sb_slide_delay.valueChanged.connect(
+            self._on_slide_delay_changed)
+        bar.addWidget(self.sb_slide_delay)
         bar.addStretch(1)
         btn_save = QPushButton("Save PNG...")
         btn_save.clicked.connect(self._save_png)
@@ -2957,6 +2988,65 @@ class RecoilViewer(QDialog, FolderBrowserMixin):
         if not self._image.save(path, "PNG"):
             QMessageBox.warning(self, "Save PNG",
                                   f"Failed to save {path}")
+
+    # --- Slideshow ---------------------------------------------
+
+    def _toggle_slideshow(self, checked=None):
+        """Start or stop auto-advance through the file list."""
+        # Use the button's actual state (Qt may pass None when
+        # called programmatically).
+        active = self.btn_slideshow.isChecked()
+        if active:
+            # Won't start if we're already at the last file with
+            # nowhere to go - user just sees the toggle pop back.
+            if not getattr(self, "_dir_files", None):
+                self.btn_slideshow.setChecked(False)
+                return
+            self.btn_slideshow.setText("⏸ Pause")
+            self._slideshow_timer.start(
+                self._slide_delay_s * 1000)
+        else:
+            self.btn_slideshow.setText("▶ Slideshow")
+            self._slideshow_timer.stop()
+
+    def _on_slide_delay_changed(self, value):
+        """SpinBox handler: change the delay in seconds. If the
+        slideshow is currently running, restart the timer with
+        the new interval so the change takes effect at the next
+        tick rather than after the current interval expires."""
+        self._slide_delay_s = int(value)
+        if self._slideshow_timer.isActive():
+            self._slideshow_timer.start(self._slide_delay_s * 1000)
+
+    def _on_slideshow_tick(self):
+        """One slideshow step: jump to the next file. When we
+        run out, stop instead of looping - the user can press
+        Home to restart manually if they want."""
+        if not getattr(self, "_dir_files", None):
+            self._toggle_slideshow_off()
+            return
+        if self._dir_index >= len(self._dir_files) - 1:
+            # End of the list - stop the slideshow.
+            self._toggle_slideshow_off()
+            return
+        self._nav_relative(1)
+
+    def _toggle_slideshow_off(self):
+        """Programmatic stop: keep button + timer in sync."""
+        self._slideshow_timer.stop()
+        self.btn_slideshow.setChecked(False)
+        self.btn_slideshow.setText("▶ Slideshow")
+
+    def closeEvent(self, ev):
+        # Make sure the timer doesn't keep firing on a closed
+        # window - Qt would log "timer event on null receiver"
+        # and the auto-advance would zombie its way through the
+        # remaining files.
+        try:
+            self._slideshow_timer.stop()
+        except Exception:
+            pass
+        super().closeEvent(ev)
 
 
 # -----------------------------------------------------------------
