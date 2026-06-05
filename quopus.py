@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# date_time: 2026-06-06 01:31
+# date_time: 2026-06-06 01:40
 """
 Quopus Commander - PC file manager inspired by Directory Opus 4
 
@@ -518,7 +518,15 @@ def main():
             # Need a QApplication for the dialog. Create a
             # disposable one here; the real one is built a few
             # lines down.
-            from PyQt6.QtWidgets import QApplication, QMessageBox
+            #
+            # IMPORTANT: do NOT re-import QApplication locally
+            # here. QApplication is already imported at module
+            # scope (line ~93). Adding a local `from ... import
+            # QApplication` would mark it as a function-local
+            # name for ALL of main(), and the later
+            # `app = QApplication(sys.argv)` would crash with
+            # UnboundLocalError when this branch doesn't run.
+            from PyQt6.QtWidgets import QMessageBox
             tmp_app = QApplication.instance()
             if tmp_app is None:
                 tmp_app = QApplication(sys.argv)
