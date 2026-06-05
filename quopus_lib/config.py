@@ -1,4 +1,4 @@
-# date_time: 2026-06-04 00:12
+# date_time: 2026-06-04 09:41
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -464,6 +464,12 @@ DEFAULT_CONFIG = {
     "text_reader_font_size": 11,
     "text_reader_fg": "#FFFFFF",
     "text_reader_bg": "#000000",
+    # Currently-active button layer. Cycled with Ctrl+T through
+    # main -> shift -> shift_alt -> main. Persisted so the user's
+    # last selection is restored on next start - if you'd parked
+    # the grid on the shift_alt layer when you quit, the next
+    # run opens with shift_alt active.
+    "active_button_layer": "main",
     # Lister panel colors. Set via Settings -> Lister colors.
     # lister_bg is the panel background; lister_fg is the default
     # text color for files; lister_dir_fg is for directory rows.

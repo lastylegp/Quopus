@@ -1168,6 +1168,78 @@ Built-in terminal emulator designed for **BBS hopping** and Unix-box administrat
 - `Ctrl+Shift+C` / `Ctrl+Shift+V` → local copy / paste (instead of `Ctrl+C` which sends `^C`)
 - `Esc` does **not** close the dialog (it's sent to the remote). Click the toolbar Close button or use window-X to disconnect.
 
+**PETSCII case-swap on send**: when the screen is in PETSCII mode, characters typed on a standard PC keyboard are translated through `ascii_to_petscii(..., mode="mixed")` before being sent. So pressing `a` puts a lowercase letter on the C64 (PETSCII `$41`), pressing Shift+`a` puts an uppercase letter (PETSCII `$C1`) — the natural mapping. Without this the C64 sees raw ASCII bytes which the BBS interprets inverted (`A` for unshifted, `a` for shifted).
+
+**PETSCII cursor codes**: arrow keys, Home and Shift+Home are translated to the native C64 single-byte cursor codes (`$11`/`$91`/`$1D`/`$9D` for down/up/right/left, `$13` for HOME, `$93` for CLR) instead of ANSI CSI sequences. Same dialog: BBSes that read cursor traffic to move their menu cursor actually react to the keys.
+
+**Resizable window with dynamic grid scaling**: the Telnet dialog is freely resizable in both directions. The terminal cell metrics (`cell_w`/`cell_h`) are recomputed in real time from the available widget area, so dragging the window bigger makes the C64 / ANSI characters bigger; dragging it smaller shrinks them. PETSCII renders the C64 chargen bitmap with arbitrary per-pixel scaling (some destination pixels end up 1px wide and some 2px on fractional scales, which matches how a real C64 looked on a 4:3 CRT anyway); ANSI rescales the font size to fit. Any leftover pixels around the painted grid are filled with the terminal's own background color (black for PETSCII), not the dialog grey — no grey gutters around the screen.
+
+**Telnet site action button** — `telnet_site` is a direct-connect action analogous to `ftp_site`. Bind it to a button with a saved-session name as the param (e.g. `the-hidden`), and one click opens the Telnet dialog and starts connecting immediately, no Connect button needed. The session has to exist in `<quopus>/config/telnet_sessions.json` (visible in the Phonebook).
+
+**PETSCII startup banner** — drop a `quopusstartup.seq` file into the `quopus_lib/` directory and it gets rendered into the screen the first time you open the Telnet dialog. Pure PETSCII byte stream: color codes (`$1C`/`$99`/...), cursor moves, RVS on/off (`$12`/`$92`), CLR (`$93`), charset switch (`$0E`/`$8E`) and printable text all work because the bytes go through the same screen pipeline as live BBS data. The charset defaults to upper/graphics mode (the classic C64 boot default) — prepend `$0E` to your file to start in lower/mixed mode instead. Strictly one-shot: shown once when the dialog opens for the first time, never again on Connect, reconnect, or session switch. Use a PETSCII editor like PETSCII Pad (https://petscii.krissz.hu/) to design something fancy.
+
+
+### Telegram client
+
+Built-in Telegram client (via Telethon) accessible from the Networking action menu. Designed for users who run a BBS or want to manage Telegram chats next to their files without leaving Quopus.
+
+**Setup**: First time, the client asks for your `api_id` and `api_hash` from https://my.telegram.org. These are saved to `<quopus>/config/telegram.cfg` and the Telethon session lives in `<quopus>/config/telegram.session`.
+
+**Features**:
+- **Two-pane layout**: chat list on the left (search box at top, archived-chats toggle), message view on the right with a compose box at the bottom.
+- **Disk-persistent message cache** — every chat you open is cached as JSON under `<quopus>/cache/telegram/chat_<id>.json` (max 500 messages per chat). Survives Quopus restart: when you re-open the Telegram client and click a chat you already visited, messages appear instantly from disk and no Telegram server call is made. Live updates (new incoming messages) merge into the cache automatically, even when the chat isn't currently displayed.
+- **No re-fetch on tab switch** — once a chat has been synced this session (or loaded from disk cache), switching away and back doesn't hit the network. The `_cache_fresh` flag is set per chat, and stays sticky across Quopus restarts because of the disk cache.
+- **Customizable bubble colors** — own (outgoing) messages get one color, incoming get another. Editable via the "Colors..." button in the toolbar; saved both to disk and to the live main-window config so changes survive any other config save (no clobbering by later main-window saves).
+- **Date separators** — centered "Today" / "Yesterday" / "Mon, 12 Mar" labels appear between messages whose calendar day differs, both for the initial render and for live updates.
+- **Robust scroll-to-bottom** — opening a chat or receiving a new message reliably parks the view at the latest message. Multiple deferred scroll attempts handle the asynchronous nature of `QTextBrowser.setHtml()` (the scrollbar's `maximum()` isn't valid until layout completes).
+- **Media handling** — photos/documents/videos show inline thumbnails (Telegram-provided previews) plus filename and size; click to download.
+- **Archive toggle** — chats you archive disappear from the main list (visual decluttering). Toggle a top-bar checkbox to see them again.
+
+Action: `telegram`. Recommended button: paint it sky-blue, label "Telegram".
+
+
+### IRC client
+
+Built-in multi-server IRC client with channels and DCC support. Hosted in a regular Quopus dialog, accessible from the Networking action menu.
+
+**Features**:
+- **Multi-server** — connect to several networks simultaneously, each gets its own server tab; per-server channel sub-tabs.
+- **Channel + private chat support** — join channels via `/join #foo`, accept private messages, switch tabs by clicking.
+- **Nick management** — auto-nick from config, retry on collision with configurable fallback names.
+- **Auto-join channels** — list per server, restored on connect.
+- **DCC chat and DCC SEND** — accept incoming files into a chosen download dir; reverse DCC offered if you initiate.
+- **Per-channel logging** — global toggle plus per-buffer override. Logs land under `<quopus>/cache/irc_logs/<server>/<buffer>.log` (or whatever you configured in `irc_log_dir`).
+- **Compose box** with `/command` parsing — `/me`, `/quit`, `/raw`, `/topic`, `/kick`, `/part`, `/msg`, `/notice`, `/ctcp`, etc.
+- **Color and formatting** — mIRC color codes (`^C03text^C`), bold (`^B`), underline (`^U`) and italic (`^I`) all render. Sent messages can also include color via the format-button picker.
+
+Config files (`<quopus>/config/`):
+- `irc.cfg` — server list with host/port/SSL/nick/auth/auto-join channels
+- `irc_user_templates.cfg` — per-server user info defaults
+
+Action: `irc`. Note: if you ever see "Unknown: irc" in the status bar, your `actions.py` is from a build before this action existed — pull the latest.
+
+
+### Customizable lister colors
+
+The lister panels (background, files, directories) and **per-file-extension** colors are user-configurable. Open the editor two ways:
+
+1. **Action `lister_colors`** — bind to a button or pick from the System action group, opens the editor directly.
+2. **Config menu → Appearance → "Lister colors..."** button in the bottom-left corner of the Appearance dialog.
+
+**What you can change:**
+- **Background color** — lister panel background.
+- **File color (default)** — text color for regular files that don't match any per-extension rule.
+- **Directory color** — text color for directory entries.
+- **Per-extension colors** — a table of `extension → color` mappings. Files whose extension matches one of these get rendered in the listed color; everything else falls back to the default file color. Pre-seeded with 44 useful defaults: `.prg` = blue, `.py` = purple, `.sid` = pink, `.mod` = green, `.d64`/`.d71`/`.d81` = orange, `.c`/`.h` = red, `.zip`/`.7z`/`.rar` = grey, `.png`/`.jpg` = green, etc.
+
+**Editor UX:**
+- Each extension row has a **"Pick..."** button for one-click color editing, plus double-click on any row opens the color picker.
+- Add / Remove / Edit buttons under the table; add takes an extension (with or without leading dot) and asks for a color.
+- "Reset to defaults" restores all built-in colors.
+- OK saves both to disk (`quopus.cfg`) and to the live main-window config — so the change survives any other config save that runs while Quopus is open (the same dual-write pattern used by the Telegram bubble colors).
+
+Changes apply to both listers immediately on save; no restart needed.
+
 
 For BBS upload prep where you want to see only filenames that are still too long for DOS 8+3. Toggle three ways, all equivalent:
 
@@ -1457,6 +1529,10 @@ For built-in hotkeys whose handler isn't a simple `actions.dispatch(...)` call (
 - **Right-click any cell** (filled or empty) → full edit dialog. The dialog title shows whether you're editing the *main layer*, the *Shift-layer*, or the *Shift+Alt-layer* so it's clear which one gets written, even if a modifier slipped while you were clicking. The Action picker is a hierarchical submenu grouped by purpose (Viewers, File operations, CBM/C64 tools, Networking, ...) so you don't have to scroll through 80+ actions in a flat list.
 - **Config → Action buttons...** — bulk editor with three tabs (Main layer / Shift-layer / Shift+Alt-layer), one tab per layer. Edit all three grids in the same window, OK saves all. The Action column is the same hierarchical submenu picker as the right-click dialog — both editors now read the action list from a single shared catalog so the ordering and grouping is guaranteed identical between them.
 - **Action `ftp_site`** — direct-connect FTP action button. Param = bookmark name; click connects to that bookmark immediately without opening any dialog. Created automatically when you tick "also add as action button" in the FTP connect dialog.
+- **Action `telnet_site`** — direct-connect Telnet action button (same pattern as `ftp_site`). Param = saved session name from `<quopus>/config/telnet_sessions.json`; one click opens the Telnet dialog and starts connecting. Combine with the PETSCII startup banner for instant BBS access — Click → Banner shows → BBS welcome arrives → done, no detours.
+- **Action `telegram`** — opens the Telegram client. Recommended setup: assign to a button, paint it sky-blue, label "Telegram". The client remembers everything between sessions (chat cache, archived list, bubble colors).
+- **Action `irc`** — opens the IRC client with all configured servers ready to connect. Recommended setup: button, label "IRC", colour green.
+- **Action `lister_colors`** — opens the lister color editor (background, files, dirs, per-extension). Same dialog as Settings → Appearance → "Lister colors..." but reachable as a single click from anywhere.
 
 **Layer mechanics**: a global `QApplication` event filter watches for Shift / Alt press/release on any focused widget. On every press/release it queries the live modifier state and derives the active layer: no modifier → main, Shift alone → shift, Shift+Alt → shift_alt. Auto-repeat key events are filtered out to keep the layer steady while keys are held. **Ctrl+T** cycles persistently through `main → shift → shift_alt → main` — release the modifiers and the layer stays where you cycled it, until you Ctrl+T again. The status bar shows the current layer name while non-main is sticky.
 

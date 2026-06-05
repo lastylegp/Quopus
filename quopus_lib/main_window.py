@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:36
+# date_time: 2026-06-04 09:41
 """
 Main window layout:
 
@@ -252,6 +252,32 @@ class QuopusMain(QMainWindow):
         self._layer_toggle_sticky = False
         from PyQt6.QtWidgets import QApplication
         QApplication.instance().installEventFilter(self)
+
+        # Restore the persisted button layer. If the user quit
+        # while parked on the shift_alt layer (via Ctrl+T cycle),
+        # come back up on shift_alt. Reading happens here, after
+        # _build_ui has done its first _rebuild_buttons() with
+        # the default "main" layer; we apply the saved choice and
+        # repaint if it differs.
+        saved_layer = self.config.get("active_button_layer", "main")
+        if saved_layer in ("shift", "shift_alt"):
+            self._active_layer = saved_layer
+            self._shift_layer_active = True
+            self._layer_toggle_sticky = True
+            try:
+                self._rebuild_buttons()
+            except Exception:
+                pass
+            # Reflect in the status bar so the user sees the
+            # layer is sticky-active (otherwise releasing modifiers
+            # which they aren't even holding would look like a
+            # no-op).
+            try:
+                name = self._layer_name()
+                self.lbl_status.setText(
+                    f" Button layer: {name}  (Ctrl+T to cycle) ")
+            except Exception:
+                pass
 
     def _build_ui(self):
         # Menu bar built directly from action_catalog.ACTION_GROUPS,
@@ -997,7 +1023,9 @@ class QuopusMain(QMainWindow):
         except ValueError:
             idx = 0
         new_layer = cycle[(idx + 1) % len(cycle)]
-        self._set_active_layer(new_layer, sticky=(new_layer != "main"))
+        self._set_active_layer(new_layer,
+                               sticky=(new_layer != "main"),
+                               persist=True)
         try:
             self._rebuild_buttons()
         except Exception:
@@ -1007,16 +1035,32 @@ class QuopusMain(QMainWindow):
             f" Button layer: {name}"
             f"{'  (Ctrl+T to cycle)' if new_layer != 'main' else ''} ")
 
-    def _set_active_layer(self, layer: str, sticky: bool = False):
+    def _set_active_layer(self, layer: str, sticky: bool = False,
+                          persist: bool = False):
         """Single point of truth for switching layers. Keeps the
         legacy _shift_layer_active flag in sync so callers that
         haven't migrated to _active_layer still get the right
-        behaviour (it's True for any non-main layer)."""
+        behaviour (it's True for any non-main layer).
+
+        persist=True writes the new layer to quopus.cfg so the
+        next Quopus start opens on the same layer. ONLY pass
+        persist=True from the Ctrl+T cycle handler - the
+        modifier-key event filter calls this method on every
+        Shift / Alt press+release and we don't want to thrash
+        the config file with those transient state changes."""
         if layer not in ("main", "shift", "shift_alt"):
             layer = "main"
         self._active_layer = layer
         self._shift_layer_active = (layer != "main")
         self._layer_toggle_sticky = sticky
+        if persist:
+            try:
+                if self.config.get("active_button_layer") != layer:
+                    self.config["active_button_layer"] = layer
+                    from .config import save_config
+                    save_config(self.config)
+            except Exception:
+                pass
 
     # --- F1 help ---------------------------------------------------------
     def _show_readme(self):
