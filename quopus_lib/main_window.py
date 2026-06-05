@@ -1,4 +1,4 @@
-# date_time: 2026-06-05 17:43
+# date_time: 2026-06-06 00:21
 """
 Main window layout:
 
@@ -499,7 +499,20 @@ class QuopusMain(QMainWindow):
         sr.addWidget(self.lbl_cpu)
         self.lbl_temp = QLabel(" TEMP "); self.lbl_temp.setStyleSheet(STATUSBAR_QSS)
         sr.addWidget(self.lbl_temp)
-        self.lbl_time = QLabel(" 00:00:00 "); self.lbl_time.setStyleSheet(STATUSBAR_QSS)
+        self.lbl_time = QLabel(" 00:00:00 ")
+        self.lbl_time.setStyleSheet(STATUSBAR_QSS)
+        # Click on the time label opens a big analog + digital
+        # clock dialog. QLabel doesn't have a clicked signal so
+        # we intercept the press event via mousePressEvent on a
+        # one-liner subclass below. Cursor + tooltip hint at
+        # the interactivity.
+        self.lbl_time.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lbl_time.setToolTip("Click for big clock")
+
+        def _on_time_click(_ev):
+            from .clock_widget import show_big_clock
+            show_big_clock(self)
+        self.lbl_time.mousePressEvent = _on_time_click
         sr.addWidget(self.lbl_time)
         main.addWidget(status)
 
