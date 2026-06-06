@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 00:21
+# date_time: 2026-06-06 10:15
 """
 Main window layout:
 
@@ -165,6 +165,13 @@ class _DraggableButton(QPushButton):
 class QuopusMain(QMainWindow):
     def __init__(self):
         super().__init__()
+        # NOTE: The AppData recovery check used to live here but
+        # was moved to quopus.main() because load_config() and
+        # other early init code touches CONFIG_DIR before this
+        # point. Running the check from main() ensures we see a
+        # truly fresh local config when deciding whether to
+        # offer the AppData import.
+
         self.config = load_config()
         # Stash a pointer to the live config on the QApplication
         # so that helper functions in config.py (scaled_font_px,
@@ -2588,25 +2595,260 @@ class QuopusMain(QMainWindow):
         their files live inside a single bundled executable and
         can't be patched in place, so any 'update available' would
         be a dead end for the user."""
-        # Frozen / standalone EXE: never check. The .exe wraps a
-        # snapshot of the source tree at build time; the
-        # update_checker would happily report a newer commit on
-        # GitHub but pull_update has no individual files on disk
-        # to write to. Better to skip silently and let the user
-        # download a fresh installer.
+        # Frozen / standalone EXE: use the dedicated update
+        # manager that supports sidecar qpe updates and full-
+        # EXE replacement. The source-tree git-diff updater
+        # below this branch is only useful when there are real
+        # .py files on disk to write to.
         import sys
         if getattr(sys, "frozen", False):
+            self._frozen_check_for_updates(manual=manual)
+            return
+        # Source install: hand off to the git-based path.
+        self._start_source_update_check(manual=manual)
+
+    def _frozen_check_for_updates(self, manual=False):
+        """Update flow for .exe builds. Queries GitHub Releases,
+        shows the user what's available, and lets them pick:
+            - qpe-bundle (small download, in-place hot patch)
+            - full EXE replace (bigger download, restart)
+            - cancel
+
+        Sidecar qpe overrides take effect on next Quopus launch
+        because the bundled EXE has the OLD modules already
+        imported. The function shows that nudge after a
+        successful qpe install.
+        """
+        from PyQt6.QtWidgets import (
+            QMessageBox, QProgressDialog, QDialog, QVBoxLayout,
+            QLabel, QHBoxLayout, QPushButton,
+        )
+        from PyQt6.QtCore import Qt
+        try:
+            from .update_manager import (
+                check_for_updates,
+                install_qpe_update,
+                download_exe_update,
+                trigger_exe_swap_and_exit,
+            )
+        except Exception as e:
             if manual:
-                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    self, "Updates",
+                    f"Update manager unavailable:\n{e}")
+            return
+
+        # Bring in QUOPUS_VERSION lazily - it lives in quopus.py
+        # and importing the top-level there from inside main_window
+        # introduces a circular dep risk if done at module scope.
+        try:
+            from quopus import QUOPUS_VERSION
+        except Exception:
+            QUOPUS_VERSION = "v0.0"
+
+        info = check_for_updates(QUOPUS_VERSION)
+        if info.get("error"):
+            if manual:
+                QMessageBox.warning(
+                    self, "Updates",
+                    f"Could not check for updates:\n"
+                    f"{info['error']}")
+            return
+        if not info.get("available"):
+            if manual:
                 QMessageBox.information(
                     self, "Updates",
-                    "Quopus is running as a standalone build "
-                    "(.exe).\n\n"
-                    "In-app updates are only supported in the "
-                    "Python-source install. To upgrade this "
-                    "build, download the latest installer from "
-                    "GitHub.")
+                    f"Quopus {QUOPUS_VERSION} is up to date.\n"
+                    f"Latest release: {info.get('latest_tag')}")
             return
+
+        # Present the picker - which kind of update?
+        latest = info["latest_tag"]
+        exe_a = info.get("exe_asset")
+        qpe_a = info.get("qpe_asset")
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Quopus update available")
+        dlg.resize(520, 360)
+        lay = QVBoxLayout(dlg)
+        head = QLabel(
+            f"<b>{latest} is available</b><br>"
+            f"You are running {QUOPUS_VERSION}.")
+        head.setTextFormat(Qt.TextFormat.RichText)
+        lay.addWidget(head)
+        # Release notes (truncated)
+        body_text = info.get("body", "") or "(no release notes)"
+        if len(body_text) > 800:
+            body_text = body_text[:800] + "..."
+        notes = QLabel(body_text)
+        notes.setWordWrap(True)
+        notes.setStyleSheet(
+            "QLabel { background: #f6f6f6; padding: 8px; "
+            "border: 1px solid #ccc; font-family: monospace; "
+            "font-size: 11px; }")
+        lay.addWidget(notes, 1)
+
+        choice = {"kind": None}  # closure-captured outcome
+
+        btn_row = QHBoxLayout()
+        if qpe_a is not None:
+            sz = qpe_a.get("size", 0) / (1024 * 1024)
+            btn_qpe = QPushButton(
+                f"Update files\n({qpe_a['name']}, "
+                f"{sz:.1f} MB)")
+            btn_qpe.setToolTip(
+                "Download the patch bundle and install it "
+                "directly into the Quopus install folder. "
+                "Updates module .qpe files, icons, fonts, "
+                "templates - everything except the EXE itself. "
+                "Activates on next launch.")
+
+            def _pick_qpe():
+                choice["kind"] = "qpe"
+                dlg.accept()
+            btn_qpe.clicked.connect(_pick_qpe)
+            btn_row.addWidget(btn_qpe)
+        if exe_a is not None:
+            sz = exe_a.get("size", 0) / (1024 * 1024)
+            btn_exe = QPushButton(
+                f"Replace EXE\n({exe_a['name']}, "
+                f"{sz:.1f} MB)")
+            btn_exe.setToolTip(
+                "Download the new Quopus.exe, then close "
+                "Quopus and let the helper swap them. Use this "
+                "for major version bumps or when the qpe "
+                "bundle is not sufficient.")
+
+            def _pick_exe():
+                choice["kind"] = "exe"
+                dlg.accept()
+            btn_exe.clicked.connect(_pick_exe)
+            btn_row.addWidget(btn_exe)
+        btn_row.addStretch(1)
+        btn_cancel = QPushButton("Later")
+        btn_cancel.clicked.connect(dlg.reject)
+        btn_row.addWidget(btn_cancel)
+        lay.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        kind = choice["kind"]
+        if kind is None:
+            return
+
+        # Driver loop: build a QProgressDialog and run the
+        # download. Both qpe and exe go through the same
+        # progress widget; the callback updates the bar.
+        if kind == "qpe":
+            asset = qpe_a
+            label = "Downloading qpe module bundle..."
+        else:
+            asset = exe_a
+            label = "Downloading new Quopus.exe..."
+        total_mb = asset.get("size", 0) / (1024 * 1024)
+        prog = QProgressDialog(label, "Cancel", 0, 100, self)
+        prog.setWindowTitle("Quopus update")
+        prog.setWindowModality(Qt.WindowModality.WindowModal)
+        prog.setMinimumDuration(0)
+        prog.setValue(0)
+        cancelled = {"v": False}
+
+        def _on_cancel():
+            cancelled["v"] = True
+        prog.canceled.connect(_on_cancel)
+
+        def _progress(bytes_so_far, total):
+            if cancelled["v"]:
+                raise RuntimeError("update cancelled by user")
+            mb = bytes_so_far / (1024 * 1024)
+            if total:
+                pct = int(bytes_so_far * 100 / total)
+                prog.setValue(min(pct, 99))
+                prog.setLabelText(
+                    f"{label}\n{mb:.1f} / {total_mb:.1f} MB "
+                    f"({pct}%)")
+            else:
+                prog.setLabelText(
+                    f"{label}\n{mb:.1f} MB downloaded")
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+
+        try:
+            if kind == "qpe":
+                n, err = install_qpe_update(
+                    asset["url"], progress_cb=_progress)
+                prog.setValue(100)
+                prog.close()
+                # Show the install folder so the user can see
+                # where the .qpe files landed - helpful for
+                # debugging permission issues.
+                try:
+                    from .update_manager import _install_root
+                    target_path = str(_install_root())
+                except Exception:
+                    target_path = "(install folder)"
+                msg = (f"Installed {n} updated file(s) into:\n"
+                        f"{target_path}\n\n"
+                        f"Restart Quopus to activate the new "
+                        f"modules and assets.")
+                if err:
+                    msg += f"\n\nNote: {err}"
+                    QMessageBox.warning(
+                        self, "Quopus update", msg)
+                else:
+                    QMessageBox.information(
+                        self, "Quopus update", msg)
+            else:
+                new_exe = download_exe_update(
+                    asset["url"], progress_cb=_progress)
+                prog.setValue(100)
+                prog.close()
+                ret = QMessageBox.question(
+                    self, "Quopus update",
+                    f"Downloaded:\n{new_exe}\n\n"
+                    f"Close Quopus and replace the running "
+                    f"executable now?\n\n"
+                    f"(A helper script will delete the old "
+                    f"EXE, rename _NEW into place, and start "
+                    f"the new version.)",
+                    QMessageBox.StandardButton.Yes
+                    | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes)
+                if ret == QMessageBox.StandardButton.Yes:
+                    # Save current state first so we don't lose
+                    # the user's session across the swap.
+                    try:
+                        from .config import (
+                            save_config,
+                            mirror_config_to_appdata)
+                        save_config(self.config)
+                        mirror_config_to_appdata()
+                    except Exception:
+                        pass
+                    trigger_exe_swap_and_exit()
+        except RuntimeError as e:
+            # User pressed Cancel during download.
+            prog.close()
+            QMessageBox.information(
+                self, "Quopus update",
+                f"Update cancelled: {e}")
+        except Exception as e:
+            prog.close()
+            QMessageBox.warning(
+                self, "Quopus update",
+                f"Update failed:\n{e}")
+
+    def _start_source_update_check(self, manual=False):
+        """Source-tree (Python install) update path. Uses the
+        git-diff-based update_checker module to find newer
+        commits on the configured branch and apply them as a
+        normal file-update pass.
+
+        Originally lived inline inside _start_update_check;
+        moved to its own method so the frozen and source paths
+        are cleanly separated and the frozen path doesn't
+        accidentally fall through into git logic that has no
+        meaning in a .exe build.
+        """
         if not manual and not self.config.get(
                 "update_check_enabled", True):
             # Silenced by user preference - nothing to do.
@@ -3154,6 +3396,15 @@ class QuopusMain(QMainWindow):
             except Exception:
                 pass
         save_config(self.config)
+        # Mirror the freshly-saved config to AppData so a future
+        # Quopus install (different folder, new EXE etc.) can
+        # find it. Best-effort - the helper swallows its own
+        # errors and never raises.
+        try:
+            from .config import mirror_config_to_appdata
+            mirror_config_to_appdata()
+        except Exception:
+            pass
         event.accept()
 
     def _refresh_dynamic_stylesheets(self):

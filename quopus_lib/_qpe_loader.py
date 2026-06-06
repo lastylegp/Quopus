@@ -1,3 +1,4 @@
+# date_time: 2026-06-06 10:15
 """Import hook for Quopus-encrypted modules (.qpe files).
 
 When the trial build ships, premium-feature-bearing modules are
@@ -129,8 +130,12 @@ class _QpeFinder(importlib.abc.MetaPathFinder):
         # module file; the leading parts are subdirectories that
         # have to already exist as packages on disk.
         leaf = rel_parts[-1]
+        sub_dirs = rel_parts[:-1]
         for sp in search_paths:
-            qpe_path = Path(sp) / f"{leaf}.qpe"
+            qpe_path = Path(sp)
+            for sub in sub_dirs:
+                qpe_path = qpe_path / sub
+            qpe_path = qpe_path / f"{leaf}.qpe"
             if qpe_path.is_file():
                 loader = _QpeLoader(fullname, qpe_path)
                 spec = importlib.machinery.ModuleSpec(
