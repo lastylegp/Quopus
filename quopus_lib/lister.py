@@ -1,4 +1,4 @@
-# date_time: 2026-06-04 00:28
+# date_time: 2026-06-05 14:47
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -541,29 +541,68 @@ class FileLister(QWidget):
             self.model.set_lister_colors(fg, dir_fg, ext_colors)
         if hasattr(self._delegate, "set_lister_colors"):
             self._delegate.set_lister_colors(fg, dir_fg, ext_colors)
+        # ALSO push the colors through the QPalette. On Linux with
+        # the GTK or Fusion style, Qt routinely ignores
+        # background-color in item-view stylesheets - the GTK
+        # theme's own palette wins. Forcing the palette
+        # explicitly bypasses that and makes the colors actually
+        # appear. Windows ignores the palette (stylesheet wins)
+        # so this is harmless there.
+        try:
+            from PyQt6.QtGui import QPalette, QColor
+            pal = self.view.palette()
+            pal.setColor(QPalette.ColorRole.Base, QColor(bg))
+            pal.setColor(QPalette.ColorRole.AlternateBase, QColor(bg))
+            pal.setColor(QPalette.ColorRole.Text, QColor(fg))
+            pal.setColor(QPalette.ColorRole.Window, QColor(bg))
+            pal.setColor(QPalette.ColorRole.WindowText, QColor(fg))
+            self.view.setPalette(pal)
+            # The viewport widget also needs its own opaque
+            # background fill, otherwise the parent's paint
+            # bleeds through on some Linux styles.
+            self.view.viewport().setAutoFillBackground(True)
+            vp_pal = self.view.viewport().palette()
+            vp_pal.setColor(QPalette.ColorRole.Base, QColor(bg))
+            vp_pal.setColor(
+                QPalette.ColorRole.AlternateBase, QColor(bg))
+            vp_pal.setColor(QPalette.ColorRole.Window, QColor(bg))
+            self.view.viewport().setPalette(vp_pal)
+        except Exception:
+            pass
         # Restyle the view stylesheet with the new background.
-        # The header section style stays based on the static
-        # WB_GREY palette - users haven't asked for header
-        # recolouring.
-        body_qss = f"""
-QListView {{
-    background-color: {bg};
-    color: {fg};
-    font-family: "Topaz-8", "Topaz", "Courier New", monospace;
-    font-size: {scaled_font_px(12)}px;
-    border: 1px solid {C.BLACK};
-    selection-background-color: {C.SELECTED};
-    selection-color: {C.SELECTED_FG};
-    outline: none;
-    alternate-background-color: {bg};
-    show-decoration-selected: 0;
-}}
-QTreeView {{
-    background-color: {bg};
-    color: {fg};
-}}
-"""
-        self.view.setStyleSheet(body_qss + SCROLLBAR_QSS + f"""
+        # We put the selectors under QTreeView (not QListView!) -
+        # the view is actually a QTreeView subclass, so the old
+        # QListView { ... } block didn't match anything. With
+        # Qt's strict CSS the wrong-selector block was a silent
+        # no-op on every platform; it just happened to look OK
+        # on Windows because Windows fell through to the system
+        # default which matched the old defaults.
+        self.view.setStyleSheet(f"""
+            QTreeView {{
+                background-color: {bg};
+                color: {fg};
+                font-family: "Topaz-8", "Topaz", "Courier New", monospace;
+                font-size: {scaled_font_px(12)}px;
+                border: 1px solid {C.BLACK};
+                selection-background-color: {C.SELECTED};
+                selection-color: {C.SELECTED_FG};
+                outline: none;
+                alternate-background-color: {bg};
+                show-decoration-selected: 1;
+            }}
+            QTreeView::item {{
+                border: 0;
+                padding: 0 2px;
+                color: {fg};
+            }}
+            QTreeView::item:selected {{
+                background-color: {C.SELECTED};
+                color: {C.SELECTED_FG};
+            }}
+            QTreeView::branch {{
+                background: transparent;
+            }}
+            {SCROLLBAR_QSS}
             QHeaderView::section {{
                 background-color: {C.WB_GREY};
                 color: {C.BLACK};
@@ -573,9 +612,6 @@ QTreeView {{
                 font-size: {scaled_font_px(11)}px;
                 font-weight: bold;
             }}
-            QTreeView {{ show-decoration-selected: 1; }}
-            QTreeView::item {{ border: 0; padding: 0 2px; }}
-            QTreeView::branch {{ background: transparent; }}
         """)
         # Force a repaint so directories switch to their new
         # color even when the row geometry didn't change.

@@ -1,4 +1,4 @@
-# date_time: 2026-06-04 00:20
+# date_time: 2026-06-06 23:14
 """Lister colors editor dialog.
 
 Lets the user change the lister panel's background, default file
@@ -29,6 +29,128 @@ def _color_swatch_html(hex_color: str) -> str:
     """Tiny HTML preview block for displaying a color sample."""
     return (f'<div style="background:{hex_color};width:24px;'
             f'height:14px;border:1px solid #000;"></div>')
+
+
+# ---------------------------------------------------------------
+# Color presets for one-click theme switching. Each entry is a
+# (bg, fg, dir_fg, ext_colors) tuple matching the look-and-feel
+# of a well-known file manager's default color scheme. Selected
+# via the Preset row at the top of the dialog - clicking a button
+# pushes those values into the live form widgets but doesn't save
+# until the user hits OK. That mirrors the way Reset-to-defaults
+# already works and lets the user back out with Cancel.
+# ---------------------------------------------------------------
+LISTER_COLOR_PRESETS = {
+    "total_commander": {
+        "label": "Total Commander",
+        "tip": ("Classic Total Commander look - white panel, "
+                "black files, dark-blue directories, common "
+                "categories tinted (archives brown, images "
+                "magenta, audio teal, executables navy)."),
+        "bg":     "#ffffff",
+        "fg":     "#000000",
+        "dir_fg": "#000080",
+        "ext_colors": {
+            # Executables - navy blue
+            ".exe": "#000080", ".com": "#000080",
+            ".bat": "#000080", ".cmd": "#000080",
+            ".msi": "#000080",
+            # Archives - brown
+            ".zip": "#806000", ".rar": "#806000",
+            ".7z":  "#806000", ".tar": "#806000",
+            ".gz":  "#806000", ".bz2": "#806000",
+            ".lha": "#806000", ".lzx": "#806000",
+            # Images - magenta
+            ".jpg": "#a000a0", ".jpeg": "#a000a0",
+            ".png": "#a000a0", ".bmp": "#a000a0",
+            ".gif": "#a000a0",
+            # Audio - teal
+            ".mp3": "#008080", ".wav": "#008080",
+            ".ogg": "#008080", ".flac": "#008080",
+            # Video - olive
+            ".mp4": "#806020", ".avi": "#806020",
+            ".mkv": "#806020", ".mov": "#806020",
+            # Docs - dark red
+            ".pdf": "#800000", ".doc": "#800000",
+            ".docx": "#800000",
+        },
+    },
+    "double_commander": {
+        "label": "Double Commander",
+        "tip": ("Default Double Commander palette - bright "
+                "white panel, plain black files, blue "
+                "directories. Archives lean red, scripts "
+                "lean green."),
+        "bg":     "#ffffff",
+        "fg":     "#000000",
+        "dir_fg": "#1a4a8a",
+        "ext_colors": {
+            # Archives - red
+            ".zip": "#a02020", ".rar": "#a02020",
+            ".7z":  "#a02020", ".tar": "#a02020",
+            ".gz":  "#a02020", ".bz2": "#a02020",
+            ".xz":  "#a02020",
+            # Scripts / executables - green
+            ".sh":  "#208020", ".py":  "#208020",
+            ".pl":  "#208020", ".rb":  "#208020",
+            ".exe": "#208020", ".bat": "#208020",
+            ".com": "#208020", ".cmd": "#208020",
+            # Source code - purple
+            ".c":   "#6020a0", ".cpp": "#6020a0",
+            ".h":   "#6020a0", ".hpp": "#6020a0",
+            ".java": "#6020a0", ".cs": "#6020a0",
+            ".rs":  "#6020a0", ".go":  "#6020a0",
+            # Images - dark cyan
+            ".jpg": "#207090", ".jpeg": "#207090",
+            ".png": "#207090", ".gif": "#207090",
+            ".bmp": "#207090", ".svg": "#207090",
+            # Documents - brown
+            ".pdf": "#806020", ".doc": "#806020",
+            ".docx": "#806020", ".odt": "#806020",
+            ".txt": "#505050", ".md": "#505050",
+        },
+    },
+    "midnight_commander": {
+        "label": "Midnight Commander",
+        "tip": ("Classic MC/Norton terminal look - dark-blue "
+                "panel, light files, bold-white directories, "
+                "green executables, red archives, cyan media. "
+                "Bright on dark, like running it in a console."),
+        # The iconic MC dark-blue panel background
+        "bg":     "#000080",
+        "fg":     "#c0c0c0",   # files in light grey
+        "dir_fg": "#ffffff",   # directories in bright white
+        "ext_colors": {
+            # Executables - bright green (the MC trademark)
+            ".exe": "#00ff00", ".com": "#00ff00",
+            ".bat": "#00ff00", ".cmd": "#00ff00",
+            ".sh":  "#00ff00", ".py":  "#00ff00",
+            ".pl":  "#00ff00", ".rb":  "#00ff00",
+            # Archives - bright red
+            ".zip": "#ff5050", ".rar": "#ff5050",
+            ".7z":  "#ff5050", ".tar": "#ff5050",
+            ".gz":  "#ff5050", ".bz2": "#ff5050",
+            ".xz":  "#ff5050", ".lha": "#ff5050",
+            ".lzx": "#ff5050",
+            # Images - magenta
+            ".jpg": "#ff80ff", ".jpeg": "#ff80ff",
+            ".png": "#ff80ff", ".gif": "#ff80ff",
+            ".bmp": "#ff80ff", ".svg": "#ff80ff",
+            # Audio - bright cyan
+            ".mp3": "#80ffff", ".wav": "#80ffff",
+            ".ogg": "#80ffff", ".flac": "#80ffff",
+            # Video - yellow
+            ".mp4": "#ffff80", ".avi": "#ffff80",
+            ".mkv": "#ffff80", ".mov": "#ffff80",
+            # Source - bright yellow-green
+            ".c":   "#c0ff80", ".cpp": "#c0ff80",
+            ".h":   "#c0ff80", ".py":  "#c0ff80",
+            # Documents - light tan
+            ".pdf": "#ffc080", ".txt": "#ffc080",
+            ".md":  "#ffc080", ".nfo": "#ffc080",
+        },
+    },
+}
 
 
 class _ColorButton(QPushButton):
@@ -95,6 +217,30 @@ class ListerColorsDialog(QDialog):
             if isinstance(k, str) and isinstance(v, str)}
 
         outer = QVBoxLayout(self)
+
+        # --- Preset row ---
+        # One-click theme switching. Each button writes its
+        # preset's bg/fg/dir/ext into the live form widgets
+        # without saving - the user still confirms with OK,
+        # and Cancel undoes the picture. Tooltips describe
+        # the look so the user knows what to expect before
+        # clicking.
+        g_preset = QGroupBox("Color presets")
+        pr = QHBoxLayout(g_preset)
+        pr.setSpacing(8)
+        info_pr = QLabel("Apply a preset:")
+        pr.addWidget(info_pr)
+        for key, preset in LISTER_COLOR_PRESETS.items():
+            btn = QPushButton(preset["label"])
+            btn.setToolTip(preset["tip"])
+            # Capture-by-default-arg so the loop variable isn't
+            # leaking into the lambda.
+            btn.clicked.connect(
+                lambda _checked=False, k=key:
+                    self._apply_preset(k))
+            pr.addWidget(btn)
+        pr.addStretch(1)
+        outer.addWidget(g_preset)
 
         # --- Panel colors group ---
         g_panel = QGroupBox("Panel colors")
@@ -297,6 +443,20 @@ class ListerColorsDialog(QDialog):
         self.table.setRowCount(0)
         for ext, col in items:
             self._append_row(ext, col)
+
+    def _apply_preset(self, key: str):
+        """Load the named preset into the live form widgets.
+        Doesn't save - user still needs to click OK. Replaces
+        the per-extension table contents entirely (so a
+        preset switch doesn't leave stray colors behind from
+        a previously-edited list)."""
+        preset = LISTER_COLOR_PRESETS.get(key)
+        if preset is None:
+            return
+        self.btn_bg.set_color(preset["bg"])
+        self.btn_fg.set_color(preset["fg"])
+        self.btn_dir.set_color(preset["dir_fg"])
+        self._populate_table(preset["ext_colors"])
 
     def _reset_defaults(self):
         if QMessageBox.question(
