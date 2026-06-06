@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 22:19
+# date_time: 2026-06-06 19:16
 """
 Drive button icon rendering for the lister's drives bar.
 
@@ -578,6 +578,72 @@ def render_terminal_window(size: int = 32) -> QPixmap:
     p.drawRoundedRect(QRectF(s * 0.18, s * 0.46,
                               s * 0.64, s * 0.50),
                       1, 1)
+    p.end()
+    return pm
+
+
+def render_usb(size: int = 32) -> QPixmap:
+    """USB stick - horizontal, silver metal connector on the
+    left, plastic body on the right with a small activity LED
+    and a hint of a keyring loop. Used by render_mixed for
+    removable drives and also reachable as its own style for
+    callers that want the stick shape without a letter overlay.
+    The lower half is intentionally kept clear so render_mixed
+    can paint the drive letter on top.
+    """
+    pm = _new_pixmap(size, size)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    s = size
+    # Body (right ~60% of the icon) - blue plastic
+    body_left = s * 0.32
+    body_w = s * 0.58
+    body_top = s * 0.30
+    body_h = s * 0.40
+    p.setPen(QPen(QColor("#000"), 0.5))
+    p.setBrush(QColor("#1f4d8a"))
+    p.drawRoundedRect(
+        QRectF(body_left, body_top, body_w, body_h),
+        2, 2)
+    # Subtle highlight stripe on the top edge so the body
+    # doesn't look flat
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(255, 255, 255, 50))
+    p.drawRoundedRect(
+        QRectF(body_left + 1, body_top + 1,
+               body_w - 2, body_h * 0.18),
+        1.5, 1.5)
+    # Activity LED on the body - small green dot near the
+    # right edge, where you'd actually find it on a real stick
+    p.setBrush(QColor("#2ecc40"))
+    led_r = s * 0.04
+    p.drawEllipse(
+        QPointF(body_left + body_w - s * 0.10,
+                body_top + body_h / 2),
+        led_r, led_r)
+    # Metal connector (left side) - lighter silver
+    conn_left = s * 0.04
+    conn_w = s * 0.30
+    conn_top = s * 0.36
+    conn_h = s * 0.28
+    p.setPen(QPen(QColor("#444"), 0.5))
+    p.setBrush(QColor("#bdc3c7"))
+    p.drawRect(QRectF(conn_left, conn_top, conn_w, conn_h))
+    # Connector ridges (the gold-coloured contact strip at
+    # the tip)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor("#c89b3c"))
+    p.drawRect(QRectF(
+        conn_left + 1, conn_top + conn_h * 0.30,
+        conn_w * 0.55, conn_h * 0.40))
+    # Keyring loop hint at the far right
+    p.setPen(QPen(QColor("#000"), 0.6))
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    loop_x = body_left + body_w - s * 0.05
+    loop_y = body_top + body_h / 2
+    p.drawEllipse(
+        QPointF(loop_x + s * 0.03, loop_y),
+        s * 0.025, s * 0.025)
     p.end()
     return pm
 
