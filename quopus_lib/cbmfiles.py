@@ -1,4 +1,4 @@
-# date_time: 2026-06-05 19:59
+# date_time: 2026-06-06 10:27
 """
 cbmfiles - Commodore 8-bit disk image reader, viewer, and extractor.
 
@@ -4813,8 +4813,16 @@ class CbmDiskDialog(QDialog):
             # ASCII view: printable 0x20-0x7E only, else dot.
             asc = "".join(
                 chr(b) if 0x20 <= b < 0x7F else "." for b in chunk)
+            # Show the real C64 memory address (load + offset)
+            # instead of the in-file offset. A PRG with load
+            # $C400 displays $C400/$C410/... rather than +0000/
+            # +0010/... - that's what disassemblers and the
+            # actual machine see, and it matches the "Load
+            # address: $C400" line above. Wraps cleanly past
+            # $FFFF for the 64KB case via the & 0xFFFF mask.
+            addr = (load + offs) & 0xFFFF
             lines.append(
-                f"  +{offs:04X}  {hexpart:<47}  {asc}")
+                f"  ${addr:04X}  {hexpart:<47}  {asc}")
         text = "\n".join(lines)
         self._preview_label.setPixmap(QPixmap())
         # Switch to a monospace font for the hex peek so the
