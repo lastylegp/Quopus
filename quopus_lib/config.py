@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 01:24
+# date_time: 2026-06-06 16:40
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -612,6 +612,11 @@ DEFAULT_CONFIG = {
     # the grid on the shift_alt layer when you quit, the next
     # run opens with shift_alt active.
     "active_button_layer": "main",
+    # World-Clock dialog: the chosen analog face style. One of
+    # the keys in clock_widget.CLOCK_STYLES. Persisted so the
+    # next time Mario pops the clock open, his preferred dial
+    # comes back instead of resetting to Classic.
+    "clock_style": "classic",
     # Lister panel colors. Set via Settings -> Lister colors.
     # lister_bg is the panel background; lister_fg is the default
     # text color for files; lister_dir_fg is for directory rows.

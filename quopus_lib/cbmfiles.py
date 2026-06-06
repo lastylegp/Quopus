@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 10:27
+# date_time: 2026-06-06 11:14
 """
 cbmfiles - Commodore 8-bit disk image reader, viewer, and extractor.
 
@@ -4965,7 +4965,190 @@ class CbmDiskDialog(QDialog):
             act_disasm.triggered.connect(
                 lambda: self._disasm_entry(ent))
             menu.addAction(act_disasm)
+        # Show-as-PETSCII works for every file type, not just
+        # PRG. Useful for spotting embedded scene marker
+        # strings, FILE_ID.DIZ text inside binary data, EAPI
+        # signatures, etc. - things that hex dumps obscure
+        # but jump out when the bytes get rendered as C64
+        # PETSCII glyphs. SEQ/USR files already preview as
+        # PETSCII automatically, but the dialog gives a bigger
+        # canvas plus charset Lo/Hi toggle.
+        menu.addSeparator()
+        act_petscii = QAction(
+            f"Show '{ent.name_ascii}' as PETSCII", menu)
+        act_petscii.setToolTip(
+            "Render the file content as a grid of C64 PETSCII "
+            "glyphs. Adjustable charset (Lo/Hi), cell size and "
+            "columns. Save the rendering as PNG.")
+        act_petscii.triggered.connect(
+            lambda: self._show_entry_as_petscii(ent))
+        menu.addAction(act_petscii)
+        # Show-as-picture: for any .bin/.col/.dat file we look
+        # for the matching companions on the same disk and render
+        # them as a single multicolor bitmap image. Used by the
+        # War of the Worlds C64 family of games (and similar
+        # adventure games of the era) that store images as a
+        # .bin + .col pair, with an associated .dat carrying
+        # the room's text/vocabulary data. Multi-selecting all
+        # three lets the user inspect the picture AND the text
+        # script in one dialog.
+        picture_files = self._collect_picture_files(ent)
+        if picture_files is not None:
+            bin_ent, col_ent, dat_ent = picture_files
+            label = f"Show '{ent.name_ascii}' as picture"
+            selected_items = (
+                self._list.selectedItems()
+                if hasattr(self, "_list") else [])
+            if len(selected_items) > 1:
+                # User has a multi-selection - if it covers the
+                # scene's bin+col(+dat) trio, mention that in
+                # the menu label so it's clear which files will
+                # be combined into the picture.
+                sel_names = []
+                for it in selected_items:
+                    e = it.data(Qt.ItemDataRole.UserRole)
+                    if e is not None:
+                        sel_names.append(e.name_ascii)
+                if len(sel_names) >= 2:
+                    label = (f"Show {len(sel_names)} selected "
+                              f"files as picture")
+            act_pic = QAction(label, menu)
+            act_pic.setToolTip(
+                "Render this scene's .bin + .col as a multicolor "
+                "bitmap, plus extract any text strings from the "
+                ".dat file (adventure-game vocabulary / room "
+                "descriptions).")
+            act_pic.triggered.connect(
+                lambda: self._show_entry_as_picture(ent))
+            menu.addAction(act_pic)
         menu.exec(QCursor.pos())
+
+    def _collect_picture_files(self, ent):
+        """For a .bin/.col/.dat entry, locate the full set of
+        companion files that make up the picture. Returns
+        (bin_ent, col_ent, dat_ent) - any of which may be None
+        if the corresponding file isn't on the disk - or None
+        if `ent` doesn't look like part of a picture set at all.
+
+        The naming scheme is BASENAME.{bin,col,dat} (case
+        insensitive, '.' separator). The .bin holds the C64
+        multicolor bitmap, the .col holds the screen RAM +
+        color RAM + background byte, and the .dat - for
+        adventure games like War of the Worlds - holds the
+        room's text strings and vocabulary. The .dat doesn't
+        contribute pixels but its text can be extracted and
+        shown alongside the picture, which is why we include
+        it here.
+        """
+        name = (ent.name_ascii or "").lower()
+        m = None
+        for ext in (".bin", ".col", ".dat"):
+            if name.endswith(ext):
+                base = name[:-4]
+                break
+        else:
+            return None
+        bin_ent = None
+        col_ent = None
+        dat_ent = None
+        for e in self.reader.entries:
+            n = (e.name_ascii or "").lower()
+            if n == base + ".bin":
+                bin_ent = e
+            elif n == base + ".col":
+                col_ent = e
+            elif n == base + ".dat":
+                dat_ent = e
+        # Without a bitmap AND colour data, there's nothing to
+        # render. We could fall back to a colour-only render
+        # but it wouldn't show anything useful.
+        if bin_ent is None or col_ent is None:
+            return None
+        return (bin_ent, col_ent, dat_ent)
+
+    def _show_entry_as_picture(self, ent):
+        """Read the scene's .bin + .col (+ optional .dat) and
+        render the combined picture in a modal dialog. The
+        bitmap and color come from the .bin/.col pair the same
+        way the C64 displays them; the .dat - if present -
+        gets scanned for printable text strings which are
+        listed alongside (they're the adventure room's words /
+        descriptions, not pixel data).
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        files = self._collect_picture_files(ent)
+        if files is None:
+            QMessageBox.warning(
+                self, "Show as picture",
+                f"No matching .bin + .col pair for "
+                f"'{ent.name_ascii}'.")
+            return
+        bin_ent, col_ent, dat_ent = files
+        try:
+            bin_raw = self._read_entry_bytes(bin_ent)
+            col_raw = self._read_entry_bytes(col_ent)
+            dat_raw = (self._read_entry_bytes(dat_ent)
+                       if dat_ent is not None else None)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Show as picture",
+                f"Could not read files:\n{e}")
+            return
+        dlg = _WotwImageDialog(
+            self, bin_ent.name_ascii, col_ent.name_ascii,
+            bin_raw, col_raw,
+            dat_name=(dat_ent.name_ascii
+                      if dat_ent is not None else None),
+            dat_raw=dat_raw)
+        dlg.show()
+
+    def _show_entry_as_petscii(self, ent):
+        """Read the entry's bytes and pop up a modal dialog
+        showing them rendered as a C64 PETSCII glyph grid. The
+        dialog provides the same controls the CRT viewer's
+        PETSCII tab does - charset Lo/Hi, cell size +/-, column
+        count - plus a Save-PNG button. Works for every file
+        type the disk image has (PRG/SEQ/USR/DEL/REL), not just
+        PRG.
+        """
+        from PyQt6.QtWidgets import QMessageBox
+        try:
+            data = self._read_entry_bytes(ent)
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Show as PETSCII",
+                f"Could not read '{ent.name_ascii}':\n{e}")
+            return
+        if not data:
+            QMessageBox.information(
+                self, "Show as PETSCII",
+                f"'{ent.name_ascii}' is empty - nothing to "
+                f"render.")
+            return
+        # For PRG files the first 2 bytes are the load address;
+        # skip them so the PETSCII view shows the actual
+        # program data starting at byte 0 instead of a leading
+        # garbage cell.
+        if (ent.type_label or "").upper() == "PRG" \
+                and len(data) >= 2:
+            display_bytes = data[2:]
+            load_addr = data[0] | (data[1] << 8)
+        else:
+            display_bytes = data
+            load_addr = None
+        dlg = _CbmPetsciiDialog(
+            self, ent.name_ascii, display_bytes,
+            load_addr=load_addr,
+            initial_charset=self._charset)
+        dlg.show()
+
+    def _read_entry_bytes(self, ent):
+        """Read the raw bytes of a directory entry. Shared by
+        the PETSCII preview and the disassembler launch path
+        so they always see the exact same data."""
+        if hasattr(self, "reader") and self.reader is not None:
+            return self.reader.extract(ent)
+        return getattr(ent, "_data", b"")
 
     def _disasm_entry(self, ent: "CbmDirEntry"):
         """Extract the entry's PRG bytes from the disk image,
@@ -6688,3 +6871,555 @@ def parse_disk_image(data: bytes) -> _Optional[_DiskDbInfo]:
 
     reader.close()
     return info
+
+
+class _CbmPetsciiDialog(QDialog):
+    """Modal-ish PETSCII viewer dialog for CBM directory
+    entries. Takes a raw byte block and renders it as a grid
+    of C64 PETSCII glyphs, with the same Charset Lo/Hi toggle,
+    cell-size +/- and column-count selector that the CRT
+    toolkit's PETSCII tab provides. Used by the D64/D81
+    viewer's right-click 'Show as PETSCII' menu entry.
+
+    The bytes are rendered with the standard
+    `render_directory_to_pixmap` helper (same one the disk
+    directory display uses), which means the output looks
+    identical to what the C64 would put on screen if it
+    POKE'd those bytes into screen memory at $0400.
+    """
+
+    def __init__(self, parent, title: str, data: bytes,
+                 load_addr=None, initial_charset="lower"):
+        super().__init__(parent)
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QHBoxLayout, QComboBox, QLabel,
+            QPushButton, QScrollArea,
+        )
+        self.setWindowTitle(f"PETSCII view - {title}")
+        self.resize(900, 700)
+        self.setWindowFlags(
+            _Qt.WindowType.Window
+            | _Qt.WindowType.WindowCloseButtonHint
+            | _Qt.WindowType.WindowMinMaxButtonsHint)
+
+        self._data = bytes(data)
+        self._cell = 16
+        self._cols = 64
+        self._charset = initial_charset
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+
+        # Header line: filename + size + optional load address.
+        # Gives context inside the window so the user remembers
+        # which file they're looking at when several are open.
+        hdr_text = (f"{title}  -  {len(self._data)} bytes")
+        if load_addr is not None:
+            hdr_text += (
+                f"  (PRG body, original load address "
+                f"${load_addr:04X})")
+        hdr = QLabel(hdr_text)
+        hdr.setStyleSheet(
+            "QLabel { color: #ddd; padding: 2px 6px; "
+            "font-family: 'Courier New', monospace; }")
+        lay.addWidget(hdr)
+
+        # Toolbar
+        bar = QHBoxLayout()
+        bar.setSpacing(4)
+        bar.addWidget(QLabel("Charset:"))
+        self._cb_charset = QComboBox()
+        self._cb_charset.addItem("Lo (mixed case)", "lower")
+        self._cb_charset.addItem("Hi (UPPER + graphics)", "upper")
+        if initial_charset == "upper":
+            self._cb_charset.setCurrentIndex(1)
+        self._cb_charset.currentIndexChanged.connect(
+            self._on_controls_changed)
+        bar.addWidget(self._cb_charset)
+        bar.addSpacing(12)
+
+        bar.addWidget(QLabel("Cell:"))
+        btn_smaller = QPushButton("-")
+        btn_smaller.setMaximumWidth(28)
+        btn_smaller.clicked.connect(
+            lambda: self._adjust_cell(-2))
+        bar.addWidget(btn_smaller)
+        self._lbl_cell = QLabel("16 px")
+        bar.addWidget(self._lbl_cell)
+        btn_bigger = QPushButton("+")
+        btn_bigger.setMaximumWidth(28)
+        btn_bigger.clicked.connect(
+            lambda: self._adjust_cell(+2))
+        bar.addWidget(btn_bigger)
+        bar.addSpacing(12)
+
+        bar.addWidget(QLabel("Width:"))
+        self._cb_cols = QComboBox()
+        for c in (16, 32, 40, 48, 64, 80):
+            self._cb_cols.addItem(f"{c} cols", c)
+        self._cb_cols.setCurrentIndex(4)   # 64 cols default
+        self._cb_cols.currentIndexChanged.connect(
+            self._on_controls_changed)
+        bar.addWidget(self._cb_cols)
+        bar.addStretch(1)
+
+        btn_save = QPushButton("Save PNG...")
+        btn_save.clicked.connect(self._save_png)
+        bar.addWidget(btn_save)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        bar.addWidget(btn_close)
+        lay.addLayout(bar)
+
+        # Pixmap area in a scroll view because a large file at
+        # 16 px/cell can easily produce a 1024x4000+ image.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: #3F3FD7; }")
+        self._lbl_pixmap = QLabel()
+        self._lbl_pixmap.setStyleSheet(
+            "background-color: #3F3FD7;")
+        self._scroll.setWidget(self._lbl_pixmap)
+        lay.addWidget(self._scroll, 1)
+
+        self._refresh()
+
+    def _on_controls_changed(self, *_a):
+        self._cols = self._cb_cols.currentData() or 64
+        self._charset = (
+            self._cb_charset.currentData() or "lower")
+        self._refresh()
+
+    def _adjust_cell(self, delta: int):
+        self._cell = max(8, min(48, self._cell + delta))
+        self._lbl_cell.setText(f"{self._cell} px")
+        self._refresh()
+
+    def _refresh(self):
+        """Slice the byte buffer into rows of self._cols bytes
+        and let render_directory_to_pixmap turn each row into
+        a PETSCII line. We prepend an empty header row so the
+        renderer's row-0 reverse-video logic doesn't trigger
+        on real bytes (same trick the CRT viewer uses)."""
+        lines = []
+        for off in range(0, len(self._data), self._cols):
+            lines.append(bytes(
+                self._data[off:off + self._cols]))
+        if not lines:
+            self._lbl_pixmap.setText("(empty)")
+            return
+        padded = [b''] + lines
+        try:
+            pix = render_directory_to_pixmap(
+                padded, cell_size=self._cell,
+                charset=self._charset)
+        except Exception as e:
+            self._lbl_pixmap.setText(
+                f"PETSCII render failed:\n{e}")
+            return
+        cropped = pix.copy(
+            0, self._cell, pix.width(),
+            pix.height() - self._cell)
+        self._lbl_pixmap.setPixmap(cropped)
+        self._lbl_pixmap.adjustSize()
+        self._current_pixmap = cropped
+
+    def _save_png(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        pix = getattr(self, "_current_pixmap", None)
+        if pix is None or pix.isNull():
+            QMessageBox.warning(
+                self, "Save PNG",
+                "Nothing rendered yet.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save PETSCII view as PNG",
+            f"{self.windowTitle()}.png",
+            "PNG Images (*.png)")
+        if not path:
+            return
+        if not pix.save(path, "PNG"):
+            QMessageBox.warning(
+                self, "Save PNG",
+                f"Could not save {path}.")
+
+
+# C64 multicolor palette (Pepto's measured-from-CRT values).
+# Same data the other Quopus viewers use; duplicated here so
+# this module doesn't have to import from palette.py and pull
+# in extra dependencies for what's a self-contained renderer.
+_WOTW_C64_PALETTE = [
+    (0x00, 0x00, 0x00), (0xFF, 0xFF, 0xFF),
+    (0x88, 0x39, 0x32), (0x67, 0xB6, 0xBD),
+    (0x8B, 0x3F, 0x96), (0x55, 0xA0, 0x49),
+    (0x40, 0x31, 0x8D), (0xBF, 0xCE, 0x72),
+    (0x8B, 0x54, 0x29), (0x57, 0x42, 0x00),
+    (0xB8, 0x69, 0x62), (0x50, 0x50, 0x50),
+    (0x78, 0x78, 0x78), (0x94, 0xE0, 0x89),
+    (0x78, 0x69, 0xC4), (0x9F, 0x9F, 0x9F),
+]
+
+
+def _wotw_decode_rle(stream, target):
+    """Decompress the WotW .bin RLE stream into exactly `target`
+    bytes. The format used by the game is `00 N B` = N copies
+    of byte B, with anything else being a literal. The game's
+    own loader stops as soon as it has produced `target` output
+    bytes (size declared in the 2-byte header right before the
+    stream) - so do we. Any input bytes past that point are
+    auxiliary data the game uses for something else (sprites,
+    palette tweaks, anim frames - the format is undocumented).
+
+    Returns the decompressed bytes, padded with zeros if the
+    stream runs short. Never raises - corrupt/unknown input
+    just produces a noisy image, which is more useful for the
+    viewer than an error dialog.
+    """
+    out = bytearray()
+    i = 0
+    L = len(stream)
+    while i < L and len(out) < target:
+        b0 = stream[i]
+        if b0 == 0x00 and i + 2 < L:
+            n = stream[i + 1]
+            b = stream[i + 2]
+            n = min(n, target - len(out))
+            out.extend([b] * n)
+            i += 3
+        else:
+            out.append(b0)
+            i += 1
+    while len(out) < target:
+        out.append(0)
+    return bytes(out)
+
+
+def _wotw_decode_bin(raw):
+    """Take a .bin PRG (with the 2-byte load address still on)
+    and return (bitmap_bytes, load_addr, rows). The number of
+    rows comes from the declared decompressed size - 8000 bytes
+    is a full 25-row C64 bitmap, 6080 is a 19-row partial used
+    by the in-game scene viewer.
+
+    The load address tells the decoder which path to take:
+        $2000 / $2FA0 / similar : raw uncompressed bitmap (the
+            file is the bitmap, loaded directly into bitmap RAM)
+        $9EA0 / other 'buffer'  : RLE compressed, the next 2
+            bytes give the decompressed size, the rest is RLE
+    """
+    if len(raw) < 4:
+        return b"", 0, 25
+    load = raw[0] | (raw[1] << 8)
+    body = raw[2:]
+    # Files loaded at a real C64 bitmap base ($2000 / $2FA0) are
+    # raw; everything else (most commonly $9EA0) is compressed.
+    if load in (0x2000, 0x4000, 0x6000, 0x8000, 0xA000,
+                  0xC000, 0xE000, 0x2FA0):
+        bitmap = body
+        size = len(bitmap)
+    else:
+        size = body[0] | (body[1] << 8)
+        bitmap = _wotw_decode_rle(body[2:], size)
+    # Decide row count from the decoded size.
+    if size >= 8000:
+        rows = 25
+    else:
+        rows = max(1, size // (40 * 8))
+    return bitmap, load, rows
+
+
+def _wotw_decode_col(raw, rows):
+    """Parse a .col file into (screen_ram, color_ram, bg).
+    Layout based on observed files:
+        screen_ram   = rows * 40 bytes
+                       (upper nibble = pixel-pair color 01,
+                        lower nibble = pixel-pair color 10)
+        color_ram    = rows * 40 bytes (lower nibble = color 11)
+        background   = 1 byte (the $D021 register, color 00)
+    """
+    if len(raw) < 4:
+        return b"", b"", 0
+    body = raw[2:]   # skip 2-byte load address
+    cells = rows * 40
+    screen = bytes(body[0:cells])
+    color = bytes(body[cells:cells * 2])
+    bg = body[cells * 2] if len(body) > cells * 2 else 0
+    return screen, color, bg & 0x0F
+
+
+def _wotw_render_bitmap(bitmap, screen, color, bg,
+                          cols=40, rows=19):
+    """Render a multicolor bitmap into a QImage. C64 multicolor
+    pairs every 2 horizontal bits as one pixel, doubled in
+    width when shown - so the on-screen image is cols*8 wide
+    (in pixels) but visually 4 'fat' pixels per char-cell.
+    """
+    from PyQt6.QtGui import QImage, qRgb
+    w = cols * 8
+    h = rows * 8
+    img = QImage(w, h, QImage.Format.Format_RGB32)
+    # Pre-resolve background colour once - it doesn't change.
+    bg_rgb = qRgb(*_WOTW_C64_PALETTE[bg & 0x0F])
+    for cr in range(rows):
+        for cc in range(cols):
+            ci = cr * cols + cc
+            sb = screen[ci] if ci < len(screen) else 0
+            cb = color[ci] if ci < len(color) else 0
+            c01 = (sb >> 4) & 0x0F
+            c10 = sb & 0x0F
+            c11 = cb & 0x0F
+            rgb01 = qRgb(*_WOTW_C64_PALETTE[c01])
+            rgb10 = qRgb(*_WOTW_C64_PALETTE[c10])
+            rgb11 = qRgb(*_WOTW_C64_PALETTE[c11])
+            for cy in range(8):
+                bidx = ci * 8 + cy
+                if bidx >= len(bitmap):
+                    byte = 0
+                else:
+                    byte = bitmap[bidx]
+                py = cr * 8 + cy
+                for px in range(4):
+                    bits = (byte >> ((3 - px) * 2)) & 0x03
+                    if bits == 0:
+                        rgb = bg_rgb
+                    elif bits == 1:
+                        rgb = rgb01
+                    elif bits == 2:
+                        rgb = rgb10
+                    else:
+                        rgb = rgb11
+                    x = cc * 8 + px * 2
+                    img.setPixel(x, py, rgb)
+                    img.setPixel(x + 1, py, rgb)
+    return img
+
+
+class _WotwImageDialog(QDialog):
+    """Renderer for War of the Worlds (and related C64 games)
+    that store images as a .bin (bitmap) + .col (screen RAM +
+    color RAM + background) pair. The display reproduces what
+    a C64 in multicolor bitmap mode would show.
+
+    Compressed .bin files (those loaded at $9EA0 or similar
+    buffer addresses) are decoded with the simple `00 N B`
+    RLE scheme the game appears to use. The decoder is best-
+    effort - the exact format isn't documented and some
+    decompressed images may show small pixel-shift artifacts.
+    Uncompressed .bin files (those loaded at a real bitmap
+    base like $2000) come out pixel-perfect.
+    """
+
+    def __init__(self, parent, bin_name, col_name,
+                 bin_raw, col_raw,
+                 dat_name=None, dat_raw=None):
+        super().__init__(parent)
+        from PyQt6.QtCore import Qt as _Qt
+        from PyQt6.QtWidgets import (
+            QVBoxLayout, QHBoxLayout, QLabel,
+            QPushButton, QScrollArea, QComboBox, QSplitter,
+            QPlainTextEdit,
+        )
+        self.setWindowTitle(f"Picture - {bin_name}")
+        # Wider default when we have a .dat panel to show, so
+        # the text doesn't get squeezed against the bitmap.
+        self.resize(1200 if dat_raw else 900, 650)
+        self.setWindowFlags(
+            _Qt.WindowType.Window
+            | _Qt.WindowType.WindowCloseButtonHint
+            | _Qt.WindowType.WindowMinMaxButtonsHint)
+
+        self._bin_name = bin_name
+        self._col_name = col_name
+        self._dat_name = dat_name
+        self._bin_raw = bytes(bin_raw)
+        self._col_raw = bytes(col_raw)
+        self._dat_raw = bytes(dat_raw) if dat_raw else None
+        self._zoom = 2
+
+        self._bitmap, self._load, self._rows = \
+            _wotw_decode_bin(self._bin_raw)
+        self._screen, self._color, self._bg = \
+            _wotw_decode_col(self._col_raw, self._rows)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(4)
+
+        hdr_parts = [
+            f"<b>{bin_name}</b> ({len(self._bin_raw)} bytes, "
+            f"load ${self._load:04X})",
+            f"<b>{col_name}</b> ({len(self._col_raw)} bytes)",
+        ]
+        if self._dat_raw is not None:
+            hdr_parts.append(
+                f"<b>{dat_name}</b> "
+                f"({len(self._dat_raw)} bytes, text data)")
+        hdr_parts.append(
+            f"{self._rows} rows  -  bg=${self._bg:X}")
+        hdr = QLabel("  +  ".join(hdr_parts))
+        hdr.setStyleSheet(
+            "QLabel { color: #ddd; padding: 2px 6px; "
+            "font-family: 'Courier New', monospace; }")
+        lay.addWidget(hdr)
+
+        bar = QHBoxLayout()
+        bar.addWidget(QLabel("Zoom:"))
+        for z in (1, 2, 3, 4):
+            b = QPushButton(f"{z}x")
+            b.setMaximumWidth(36)
+            b.clicked.connect(
+                lambda _c=False, zoom=z: self._set_zoom(zoom))
+            bar.addWidget(b)
+        bar.addStretch(1)
+        btn_save = QPushButton("Save PNG...")
+        btn_save.clicked.connect(self._save_png)
+        bar.addWidget(btn_save)
+        btn_close = QPushButton("Close")
+        btn_close.clicked.connect(self.close)
+        bar.addWidget(btn_close)
+        lay.addLayout(bar)
+
+        # If we have .dat data, split the working area between
+        # the image (left) and the extracted text strings (right).
+        # Otherwise just take the full width for the image.
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(False)
+        self._scroll.setStyleSheet(
+            "QScrollArea { background: #000; }")
+        self._lbl = QLabel()
+        self._lbl.setStyleSheet("background-color: #000;")
+        self._scroll.setWidget(self._lbl)
+
+        if self._dat_raw is not None:
+            splitter = QSplitter(_Qt.Orientation.Horizontal)
+            splitter.addWidget(self._scroll)
+            # Side panel: extracted text strings + raw hex
+            # preview. The .dat doesn't contribute pixels - in
+            # WotW and similar adventure games it's the room's
+            # vocabulary and text descriptions. We surface what
+            # we can find without trying to fully decode the
+            # game's tokenizer.
+            side = QPlainTextEdit()
+            side.setReadOnly(True)
+            side.setStyleSheet(
+                "QPlainTextEdit { background: #1e1e1e; "
+                "color: #e0e0e0; "
+                "font-family: 'Courier New', monospace; "
+                "font-size: 11px; }")
+            side.setPlainText(
+                self._format_dat_panel(self._dat_raw))
+            splitter.addWidget(side)
+            splitter.setStretchFactor(0, 3)
+            splitter.setStretchFactor(1, 2)
+            lay.addWidget(splitter, 1)
+        else:
+            lay.addWidget(self._scroll, 1)
+
+        self._refresh()
+
+    def _format_dat_panel(self, dat_raw):
+        """Format the .dat contents for the side panel. We show
+        a header with the load address + body size, then any
+        printable text strings we can find (likely the
+        adventure-game vocabulary). This is informational only -
+        no decoding of the game-specific binary format. The
+        user can spot strings like 'POLICEMEN' or 'WHITE FLAG'
+        and confirm what scene the file belongs to."""
+        if len(dat_raw) < 4:
+            return "(file too short)"
+        load = dat_raw[0] | (dat_raw[1] << 8)
+        body = dat_raw[2:]
+        lines = []
+        lines.append(
+            f"Load address: ${load:04X}")
+        lines.append(
+            f"Body size:    {len(body)} bytes")
+        lines.append("")
+        lines.append("Extracted strings:")
+        lines.append("-" * 32)
+        # Find runs of printable PETSCII bytes ($20-$5F is
+        # upper-case + digits + symbols; $60-$7F is the
+        # lower-case range in PETSCII).
+        in_run = False
+        run_start = 0
+        found = []
+        for i, b in enumerate(body):
+            if (0x20 <= b <= 0x5F) or (0x60 <= b <= 0x7F):
+                if not in_run:
+                    run_start = i
+                    in_run = True
+            else:
+                if in_run and i - run_start >= 6:
+                    s = ''.join(
+                        chr(c) if 0x20 <= c < 0x7F else '.'
+                        for c in body[run_start:i])
+                    found.append((run_start, s))
+                in_run = False
+        # Catch a run that goes to the very end of the file.
+        if in_run and len(body) - run_start >= 6:
+            s = ''.join(
+                chr(c) if 0x20 <= c < 0x7F else '.'
+                for c in body[run_start:])
+            found.append((run_start, s))
+        if not found:
+            lines.append(
+                "(no printable strings of length >= 6)")
+        else:
+            for off, s in found[:200]:   # cap at 200 to be safe
+                lines.append(f"${off:04X}  {s}")
+            if len(found) > 200:
+                lines.append(
+                    f"... and {len(found) - 200} more")
+        return "\n".join(lines)
+
+    def _set_zoom(self, z):
+        self._zoom = max(1, min(8, z))
+        self._refresh()
+
+    def _refresh(self):
+        try:
+            img = _wotw_render_bitmap(
+                self._bitmap, self._screen, self._color,
+                self._bg, cols=40, rows=self._rows)
+        except Exception as e:
+            self._lbl.setText(f"Render failed:\n{e}")
+            return
+        from PyQt6.QtGui import QPixmap
+        from PyQt6.QtCore import Qt as _Qt
+        pix = QPixmap.fromImage(img)
+        if self._zoom != 1:
+            pix = pix.scaled(
+                pix.width() * self._zoom,
+                pix.height() * self._zoom,
+                _Qt.AspectRatioMode.IgnoreAspectRatio,
+                _Qt.TransformationMode.FastTransformation)
+        self._lbl.setPixmap(pix)
+        self._lbl.adjustSize()
+        self._current_pixmap = pix
+
+    def _save_png(self):
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        pix = getattr(self, "_current_pixmap", None)
+        if pix is None or pix.isNull():
+            QMessageBox.warning(
+                self, "Save PNG", "Nothing rendered yet.")
+            return
+        # Strip the .bin extension for the default filename so
+        # the user doesn't end up with "scene.bin.png".
+        base = self._bin_name
+        for ext in (".bin", ".BIN"):
+            if base.endswith(ext):
+                base = base[:-4]
+                break
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save WotW image as PNG",
+            f"{base}.png", "PNG Images (*.png)")
+        if not path:
+            return
+        if not pix.save(path, "PNG"):
+            QMessageBox.warning(
+                self, "Save PNG",
+                f"Could not save {path}.")
