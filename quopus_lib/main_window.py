@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 10:15
+# date_time: 2026-06-06 18:57
 """
 Main window layout:
 
@@ -2277,6 +2277,31 @@ class QuopusMain(QMainWindow):
         Also keeps the DIZ-panel overlay sized to its parent lister."""
         from PyQt6.QtCore import QEvent
         et = event.type()
+        # Ctrl+wheel = Firefox-style zoom: scale the app font up
+        # and down. The eventFilter is installed at app level
+        # (see __init__ -> QApplication.instance().installEventFilter)
+        # so we catch the wheel from any widget before it reaches
+        # the widget itself. Returning True consumes the event so
+        # the list/text widget under the cursor doesn't ALSO scroll.
+        if et == QEvent.Type.Wheel:
+            mods = event.modifiers()
+            # Strict 'Ctrl held' check: the ControlModifier bit is
+            # set. We tolerate Shift+Ctrl (some platforms send a
+            # phantom Shift bit alongside) and ignore the keypad
+            # numlock bit. Bare-Alt or bare-Meta wheels are NOT
+            # zoom, so we explicitly reject those combos.
+            ctrl_held = bool(
+                mods & Qt.KeyboardModifier.ControlModifier)
+            alt_or_meta = bool(mods & (
+                Qt.KeyboardModifier.AltModifier
+                | Qt.KeyboardModifier.MetaModifier))
+            if ctrl_held and not alt_or_meta:
+                if self._zoom_font_by_wheel(event):
+                    return True
+                # If we couldn't zoom (e.g. clamp), still consume
+                # the event so the underlying list doesn't scroll
+                # in a way the user clearly didn't intend.
+                return True
         if et == QEvent.Type.Enter:
             txt   = getattr(obj, '_hover_text', "")
             image = getattr(obj, '_hover_image', "")
@@ -2293,6 +2318,97 @@ class QuopusMain(QMainWindow):
             if panel is not None:
                 panel.setGeometry(0, 0, obj.width(), obj.height())
         return super().eventFilter(obj, event)
+
+    def wheelEvent(self, event):
+        """Fallback path for Ctrl+wheel. The app-level event
+        filter above already handles this in most cases, but
+        some widgets (notably QAbstractScrollArea subclasses
+        like QListView/QPlainTextEdit) deliver wheel events
+        directly to their viewport and the global filter can
+        miss them - the viewport is a QWidget child without
+        the parent chain we expect. Putting the same logic on
+        the main window's own wheelEvent gives us a second
+        chance: if the active widget didn't consume the event
+        and it bubbles up, we still catch it here."""
+        mods = event.modifiers()
+        if (mods & Qt.KeyboardModifier.ControlModifier
+                and not (mods & (
+                    Qt.KeyboardModifier.AltModifier
+                    | Qt.KeyboardModifier.MetaModifier))):
+            self._zoom_font_by_wheel(event)
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+    def _zoom_font_by_wheel(self, event):
+        """Adjust the app font scale by one step per wheel notch.
+        Step = 10% (matches Firefox's roughly-10%-per-click zoom).
+        Clamped to the same 50..300% range that apply_app_font
+        enforces, so going past either end is a no-op.
+
+        Each change is saved immediately - users who task-kill
+        the app shouldn't lose their preferred zoom.
+
+        Returns True if a change was applied, False otherwise.
+        """
+        import sys
+        try:
+            delta = event.angleDelta().y()
+        except Exception as e:
+            print(f"[ctrl-wheel] no angleDelta: {e}",
+                  file=sys.stderr)
+            return False
+        print(f"[ctrl-wheel] delta={delta}", file=sys.stderr)
+        if delta == 0:
+            return False
+        # angleDelta is in 1/8 of a degree; one mouse-wheel notch
+        # is typically 120 units. Some trackpads send smaller
+        # increments - accumulate fractional ticks so a slow
+        # scroll still ends up advancing one step.
+        acc = getattr(self, "_wheel_zoom_acc", 0) + delta
+        step = 0
+        while acc >= 120:
+            step += 1
+            acc -= 120
+        while acc <= -120:
+            step -= 1
+            acc += 120
+        self._wheel_zoom_acc = acc
+        if step == 0:
+            return False
+        try:
+            cur = int(self.config.get(
+                "app_font_scale_percent", 100))
+        except (TypeError, ValueError):
+            cur = 100
+        new = max(50, min(300, cur + step * 10))
+        print(f"[ctrl-wheel] step={step} cur={cur} new={new}",
+              file=__import__("sys").stderr)
+        if new == cur:
+            return False
+        self.config["app_font_scale_percent"] = new
+        # Apply right away so the user sees the new size live,
+        # then refresh open windows so stylesheets with
+        # scaled_font_px values pick up the change.
+        try:
+            from .config import (
+                save_config, apply_app_font,
+                refresh_all_widgets_font)
+            apply_app_font(self.config)
+            refresh_all_widgets_font()
+            save_config(self.config)
+        except Exception as e:
+            # Don't break the app if any step glitches - the
+            # in-memory cfg has the new value either way.
+            print(f"font zoom apply error: {e}")
+        # Show a brief status-bar message so the user sees what
+        # changed - same UX Firefox gives.
+        try:
+            self.statusBar().showMessage(
+                f"Zoom: {new}%", 1500)
+        except Exception:
+            pass
+        return True
 
     def _show_hover_overlay(self, text, image_path, src_button):
         """Display the hover overlay.
