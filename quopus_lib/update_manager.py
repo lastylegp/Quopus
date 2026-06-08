@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 10:15
+# date_time: 2026-06-08 19:07
 """Update manager for the frozen (.exe) build of Quopus.
 
 Combines three update strategies:
@@ -110,6 +110,23 @@ def _exe_dir() -> Path:
 # their signature on rewrite. The user is told to use the
 # full-EXE update instead when these turn up in a bundle.
 _LOCKED_FILE_SUFFIXES = (".exe", ".dll", ".pyd", ".so", ".dylib")
+
+
+# Directories we refuse to touch from ANY update bundle. The
+# user's config/ holds their personal settings (quopus.cfg,
+# bookmarks, per-tool prefs). An update must never clobber it -
+# even if a bundle ships a "default config template", overwriting
+# the live config would wipe the user's customisations. Any zip
+# entry whose path contains one of these directory names (at any
+# depth) is dropped. Compared case-insensitively.
+_PROTECTED_DIR_NAMES = {"config"}
+
+
+def _is_protected_path(rel_name: str) -> bool:
+    """True if `rel_name` (a zip-relative path) lives inside a
+    protected directory and must not be written by an update."""
+    parts = [p.lower() for p in Path(rel_name).parts]
+    return any(p in _PROTECTED_DIR_NAMES for p in parts)
 
 
 # ---------------------------------------------------------------
@@ -252,6 +269,10 @@ def apply_update_bundle(zip_path: Path) -> tuple:
     update path because they can't be replaced while the
     process is running anyway.
 
+    Anything inside a protected directory (config/) is dropped
+    outright - the user's personal settings are never touched
+    by an update, even if the bundle carries a config template.
+
     Locked .qpe files (very rare, only if a second Quopus is
     open or AV is scanning) get written to a .qpe.new sibling
     instead. The user is asked to restart and try again.
@@ -265,6 +286,7 @@ def apply_update_bundle(zip_path: Path) -> tuple:
     installed = 0
     locked = 0
     skipped_locked_native = []
+    skipped_protected = []
     last_error = None
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -272,6 +294,12 @@ def apply_update_bundle(zip_path: Path) -> tuple:
                 if info.is_dir():
                     continue
                 name = info.filename
+                # Never touch the user's config/ - their personal
+                # settings live there and an update must not wipe
+                # them. Dropped before any path/suffix handling.
+                if _is_protected_path(name):
+                    skipped_protected.append(name)
+                    continue
                 # Reject path escapes (.., absolute paths).
                 # The resolved path must sit inside root.
                 dest = (root / name).resolve()
@@ -315,6 +343,14 @@ def apply_update_bundle(zip_path: Path) -> tuple:
             f"{locked} file(s) were locked and got installed "
             f"as .new siblings - restart Quopus and the install "
             f"should pick them up next time.")
+    if skipped_protected:
+        sample = ", ".join(skipped_protected[:3])
+        if len(skipped_protected) > 3:
+            sample += f", ... +{len(skipped_protected) - 3}"
+        notes.append(
+            f"Skipped {len(skipped_protected)} file(s) inside "
+            f"protected config dir(s): {sample}. User settings "
+            f"are never overwritten by an update.")
     if skipped_locked_native:
         sample = ", ".join(skipped_locked_native[:3])
         if len(skipped_locked_native) > 3:

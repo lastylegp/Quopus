@@ -1,4 +1,4 @@
-# date_time: 2026-06-04 00:12
+# date_time: 2026-06-07 23:11
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -61,6 +61,8 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("protect",      "Protect/attributes"),
         ("archive",      "Archive"),
         ("extract",      "Extract / Arc Ext"),
+        ("smart_fill_copy", "Smart-fill copy (greedy fit)"),
+        ("smart_fill_move", "Smart-fill move (greedy fit)"),
     ]),
     ("Navigation", [
         ("parent",       "Parent"),
@@ -150,6 +152,7 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("System", [
         ("config",  "Config"),
         ("lister_colors", "Lister colors (bg, files, dirs, extensions)"),
+        ("show_drives", "Drives overview (free space, navigate)"),
         ("license", "License info / register Pro"),
         ("about",   "About"),
         ("quit",    "Quit"),
