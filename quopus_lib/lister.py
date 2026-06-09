@@ -1,4 +1,4 @@
-# date_time: 2026-06-05 14:47
+# date_time: 2026-06-09 22:32
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -10,6 +10,9 @@ Keys (handled by eventFilter on the QListView):
   *         -> invert all tags
   BACKSPACE -> parent directory
   ENTER     -> open / enter
+  CTRL+ALT+<chr> -> start quick-filter: show only entries whose name
+               starts with <chr>; keep typing to narrow, BACKSPACE
+               edits, ESC cancels, ENTER opens the highlighted entry
 """
 import os
 import platform
@@ -113,6 +116,50 @@ class _DnDTreeView(QTreeView):
                 w.parent_dir()
             event.accept()
             return
+        # Right-button press -> start a Total Commander-style
+        # drag-tag gesture. Holding RMB and dragging across rows
+        # toggles their tag state for every row the cursor passes.
+        # The toggle direction is fixed by the state of the FIRST
+        # row touched: was it untagged, we run in 'tag' mode for
+        # the rest of the drag; was it already tagged, we run in
+        # 'untag' mode. This matches TC's behaviour exactly and
+        # lets the user fix a mistagged batch with a single sweep.
+        # A plain RMB click (no drag) still opens the context
+        # menu - we detect "no drag" by tracking whether we hit
+        # more than one row total.
+        if event.button() == Qt.MouseButton.RightButton:
+            idx = self.indexAt(event.pos())
+            self._rmb_drag_active = True
+            self._rmb_did_move = False
+            self._rmb_tag_mode = None
+            self._rmb_last_row = -1
+            if idx.isValid():
+                row = idx.row()
+                try:
+                    w = self.parent()
+                    while w is not None and not hasattr(
+                            w, 'model'):
+                        w = (w.parent() if hasattr(w, 'parent')
+                              else None)
+                    if w is not None and hasattr(w, 'model'):
+                        e = w.model.entry_at(row)
+                        tagged = w.model.tagged_paths()
+                        is_t = (e is not None
+                                and e.path in tagged)
+                        # If the start row is untagged, the drag
+                        # tags everything we touch; if it was
+                        # already tagged, the drag untags. Same
+                        # rule TC uses, and matches user intent
+                        # (whatever the first row needs, do that
+                        # to the rest).
+                        self._rmb_tag_mode = (
+                            "untag" if is_t else "tag")
+                        w.model.toggle_tag(row)
+                        self._rmb_last_row = row
+                except Exception:
+                    pass
+            event.accept()
+            return
         # Remember left-button press position so mouseMove can detect
         # when the user has dragged far enough to start a drag operation.
         if event.button() == Qt.MouseButton.LeftButton:
@@ -157,6 +204,49 @@ class _DnDTreeView(QTreeView):
         super().mouseDoubleClickEvent(event)
 
     def mouseMoveEvent(self, event):
+        # Right-button drag = Total Commander style tag sweep.
+        # When RMB is held and the cursor moves over a new row,
+        # apply the chosen tag mode (set in mousePressEvent).
+        # Each row gets toggled at most once per drag - we
+        # remember the last row we processed so passing back and
+        # forth over the same row doesn't fight itself.
+        if (event.buttons() & Qt.MouseButton.RightButton
+                and getattr(self, "_rmb_drag_active", False)
+                and self._rmb_tag_mode is not None):
+            idx = self.indexAt(event.pos())
+            if idx.isValid():
+                row = idx.row()
+                if row != self._rmb_last_row:
+                    try:
+                        w = self.parent()
+                        while w is not None and not hasattr(
+                                w, 'model'):
+                            w = (w.parent()
+                                  if hasattr(w, 'parent')
+                                  else None)
+                        if w is not None and hasattr(w, 'model'):
+                            # Force the row to the chosen mode
+                            # rather than toggle - prevents
+                            # flickering on jittery dragging
+                            # across the same row twice.
+                            e = w.model.entry_at(row)
+                            if e is not None:
+                                tagged = w.model.tagged_paths()
+                                is_t = e.path in tagged
+                                want_t = (
+                                    self._rmb_tag_mode == "tag")
+                                if is_t != want_t:
+                                    w.model.toggle_tag(row)
+                                    self._rmb_drag_did_tag = True
+                    except Exception:
+                        pass
+                    self._rmb_last_row = row
+                    # Mark that we crossed at least one extra row
+                    # so the release handler suppresses the
+                    # context menu.
+                    self._rmb_did_move = True
+            event.accept()
+            return
         # Only initiate a drag if:
         #   - left button is held
         #   - we have a remembered press position
@@ -177,6 +267,30 @@ class _DnDTreeView(QTreeView):
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self._lmb_press_pos = None
+        if event.button() == Qt.MouseButton.RightButton:
+            # Closing the RMB-drag-tag gesture. If the user
+            # moved across at least one extra row (i.e. did an
+            # actual drag, not just a click on one row), we
+            # suppress the context menu: the gesture was a tag
+            # sweep, not a context request.
+            did_move = getattr(self, "_rmb_did_move", False)
+            self._rmb_drag_active = False
+            self._rmb_did_move = False
+            self._rmb_last_row = -1
+            self._rmb_tag_mode = None
+            if did_move:
+                # Tell our owning lister to skip the very next
+                # context-menu request. Set on the FileLister
+                # so its _ctx_menu slot can read + clear it.
+                w = self.parent()
+                while w is not None and not hasattr(
+                        w, '_ctx_menu'):
+                    w = (w.parent() if hasattr(w, 'parent')
+                          else None)
+                if w is not None:
+                    w._suppress_next_ctx_menu = True
+                event.accept()
+                return
         super().mouseReleaseEvent(event)
 
     def _do_drag(self):
@@ -385,6 +499,16 @@ class FileLister(QWidget):
             "padding: 1px 4px; } "
             "QToolButton::menu-indicator { width: 0px; }")
         self._current_filter_ext = "*"   # active filter
+        # --- Quick-Search / Quick-Filter (Total Commander style) ---
+        # _qs_prefix is None when inactive. When the user presses
+        # Alt+<letter> the lister enters quick-filter mode: only
+        # entries whose NAME starts with the typed prefix stay
+        # visible, and further typing narrows the list. The filter
+        # composes ON TOP of the extension filter above. The small
+        # floating overlay (_qs_overlay) shows the current prefix
+        # and the live hit count at the bottom-left of the view.
+        self._qs_prefix = None
+        self._qs_overlay = None
         # The menu itself is built lazily / rebuilt on every
         # refresh() via _populate_filter_dropdown.
         self._filter_menu = QMenu(self)
@@ -469,6 +593,9 @@ class FileLister(QWidget):
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._ctx_menu)
         self.view.installEventFilter(self)
+        # Watch the viewport too, so the quick-search overlay can be
+        # repositioned when the view is resized while it is showing.
+        self.view.viewport().installEventFilter(self)
 
         # Header: column widths + click-to-sort
         hdr = self.view.header()
@@ -814,9 +941,110 @@ class FileLister(QWidget):
             self.got_focus.emit(self)
 
         view = getattr(self, 'view', None)
+
+        # Reposition the quick-search overlay when the view resizes.
+        if (view is not None and obj is view.viewport()
+                and event.type() == QEvent.Type.Resize):
+            self._position_qs_overlay()
+            # don't consume - let the view handle its own resize too
+
+        # ---- ShortcutOverride: claim keys for the quick-search box
+        # before the application-wide QShortcuts (Backspace = parent
+        # dir, Escape, ...) can swallow them. Accepting the override
+        # tells Qt to deliver a normal KeyPress to the view instead of
+        # firing the shortcut.
+        if (view is not None and obj is view
+                and event.type() == QEvent.Type.ShortcutOverride):
+            key = event.key()
+            mods = event.modifiers()
+            ctrl_meta = (Qt.KeyboardModifier.ControlModifier
+                         | Qt.KeyboardModifier.MetaModifier)
+            ctrl_alt = (bool(mods & Qt.KeyboardModifier.ControlModifier)
+                        and bool(mods & Qt.KeyboardModifier.AltModifier))
+            is_alnum = (Qt.Key.Key_A <= key <= Qt.Key.Key_Z
+                        or Qt.Key.Key_0 <= key <= Qt.Key.Key_9)
+            if self._qs_prefix is not None:
+                # Active: own the editing/navigation keys, plain typing,
+                # and Ctrl+Alt+<letter> (so holding the combo keeps
+                # narrowing instead of firing a global shortcut).
+                if key in (Qt.Key.Key_Escape, Qt.Key.Key_Backspace,
+                           Qt.Key.Key_Return, Qt.Key.Key_Enter,
+                           Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+                    event.accept(); return True
+                if ctrl_alt and is_alnum:
+                    event.accept(); return True
+                t = event.text()
+                if (t and len(t) == 1 and t.isprintable()
+                        and not (mods & ctrl_meta)):
+                    event.accept(); return True
+            else:
+                # Inactive: Ctrl+Alt+<letter/digit> starts the quick filter
+                if ctrl_alt and is_alnum:
+                    event.accept(); return True
+
         if view is not None and obj is view and event.type() == QEvent.Type.KeyPress:
             key = event.key()
             mods = event.modifiers()
+
+            # ---- Quick-Search / Quick-Filter (Total Commander style)
+            # Active: keys edit/steer the search box and the live filter.
+            if self._qs_prefix is not None:
+                ctrl_meta = (Qt.KeyboardModifier.ControlModifier
+                             | Qt.KeyboardModifier.MetaModifier)
+                if key == Qt.Key.Key_Escape:
+                    self._quicksearch_cancel()
+                    return True
+                if key == Qt.Key.Key_Backspace:
+                    self._quicksearch_backspace()
+                    return True
+                if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                    # Confirm: open the highlighted entry, drop the filter.
+                    idx = view.currentIndex()
+                    self._quicksearch_cancel()
+                    if idx.isValid():
+                        self._on_double_click(idx)
+                    return True
+                if key in (Qt.Key.Key_Tab, Qt.Key.Key_Backtab):
+                    self._quicksearch_cancel()
+                    self.tab_pressed.emit(self)
+                    return True
+                if key in (Qt.Key.Key_Up, Qt.Key.Key_Down,
+                           Qt.Key.Key_PageUp, Qt.Key.Key_PageDown,
+                           Qt.Key.Key_Home, Qt.Key.Key_End):
+                    # Let the view navigate the filtered rows.
+                    return False
+                # Ctrl+Alt+<letter/digit>: narrow further even while the
+                # combo is held down (text() is empty for Ctrl+Alt, so
+                # derive the char from the key code).
+                if (bool(mods & Qt.KeyboardModifier.ControlModifier)
+                        and bool(mods & Qt.KeyboardModifier.AltModifier)):
+                    if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+                        self._quicksearch_append(chr(key).lower())
+                        return True
+                    if Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+                        self._quicksearch_append(chr(key))
+                        return True
+                t = event.text()
+                if (t and len(t) == 1 and t.isprintable()
+                        and not (mods & ctrl_meta)):
+                    self._quicksearch_append(t)
+                    return True
+                # any other key passes through to the view unchanged
+                return False
+
+            # Inactive: Ctrl+Alt+<letter/digit> opens the quick filter,
+            # seeding it with that character. (On a German keyboard this
+            # is the same chord as AltGr+<letter>, which is handy.)
+            if (bool(mods & Qt.KeyboardModifier.ControlModifier)
+                    and bool(mods & Qt.KeyboardModifier.AltModifier)):
+                ch = None
+                if Qt.Key.Key_A <= key <= Qt.Key.Key_Z:
+                    ch = chr(key).lower()
+                elif Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
+                    ch = chr(key)
+                if ch is not None:
+                    self._quicksearch_start(ch)
+                    return True
 
             if key == Qt.Key.Key_Tab or key == Qt.Key.Key_Backtab:
                 self.tab_pressed.emit(self)
@@ -856,6 +1084,132 @@ class FileLister(QWidget):
                 return True
 
         return super().eventFilter(obj, event)
+
+    # ------------------------------------------------------------------
+    # Quick-Search / Quick-Filter (Total Commander style)
+    #
+    # Alt+<letter> opens an inline filter box: the lister shows only the
+    # entries whose name STARTS WITH the typed prefix (case-insensitive),
+    # and every further keystroke narrows the list. The filter stacks on
+    # top of the extension filter (btn_filter). Backspace edits the
+    # prefix (and closes the box when the last char is removed), Escape
+    # cancels and restores the listing, Enter opens the highlighted entry.
+    # Any directory change / refresh resets the quick filter.
+    # ------------------------------------------------------------------
+
+    def _quicksearch_filter(self, entries):
+        """Keep only entries whose name begins with the active prefix.
+        Returns the list unchanged when no quick filter is active."""
+        pref = getattr(self, '_qs_prefix', None)
+        if not pref:
+            return entries
+        p = pref.lower()
+        return [e for e in entries if e.name.lower().startswith(p)]
+
+    def _quicksearch_apply(self):
+        """Rebuild the model from the cached listing with the extension
+        filter AND the quick-search prefix applied, refresh the info bar,
+        and park the cursor on the first match. Pulls from the cached
+        _all_entries so there is no filesystem access and no flicker."""
+        cache = getattr(self, '_all_entries', None)
+        if cache is None:
+            return
+        entries = self._apply_filter_to_entries(list(cache))  # ext filter
+        entries = self._quicksearch_filter(entries)           # name prefix
+        n_dirs = sum(1 for e in entries if e.is_dir)
+        n_files = sum(1 for e in entries if not e.is_dir)
+        total_size = sum(e.size for e in entries if not e.is_dir)
+        has_crt = any(
+            (not e.is_dir) and e.name.lower().endswith(".crt")
+            for e in entries)
+        if self.model.show_crt_id_column != has_crt:
+            self.model.layoutAboutToBeChanged.emit()
+            self.model.show_crt_id_column = has_crt
+            self.model.layoutChanged.emit()
+        self.model.set_entries(entries)
+        self._stat_n_dirs = n_dirs
+        self._stat_n_files = n_files
+        self._stat_total_size = total_size
+        self._update_info_bar()
+        # Park the cursor on the first match so Enter / arrows work.
+        if self.model.rowCount() > 0:
+            idx = self.model.index(0, 0)
+            self.view.setCurrentIndex(idx)
+            self.view.scrollTo(idx)
+
+    def _quicksearch_start(self, ch):
+        self._qs_prefix = ch
+        self._quicksearch_apply()
+        self._update_qs_overlay()
+
+    def _quicksearch_append(self, ch):
+        self._qs_prefix = (self._qs_prefix or '') + ch
+        self._quicksearch_apply()
+        self._update_qs_overlay()
+
+    def _quicksearch_backspace(self):
+        pref = self._qs_prefix or ''
+        if len(pref) <= 1:
+            self._quicksearch_cancel()
+            return
+        self._qs_prefix = pref[:-1]
+        self._quicksearch_apply()
+        self._update_qs_overlay()
+
+    def _quicksearch_cancel(self):
+        """Leave quick-filter mode and restore the (extension-filtered)
+        listing. Safe to call when no quick filter is active."""
+        was = getattr(self, '_qs_prefix', None) is not None
+        self._qs_prefix = None
+        ov = getattr(self, '_qs_overlay', None)
+        if ov is not None:
+            ov.hide()
+        if was:
+            self._quicksearch_apply()  # prefix None -> restores ext-only view
+
+    def _quicksearch_reset_silent(self):
+        """Drop quick-filter state + hide the overlay without rebuilding
+        the model. Used by refresh(), which sets the entries itself."""
+        self._qs_prefix = None
+        ov = getattr(self, '_qs_overlay', None)
+        if ov is not None:
+            ov.hide()
+
+    def _ensure_qs_overlay(self):
+        ov = getattr(self, '_qs_overlay', None)
+        if ov is not None:
+            return ov
+        ov = QLabel(self.view.viewport())
+        ov.setStyleSheet(
+            f"QLabel {{ background-color: {C.WB_BLUE}; "
+            f"color: {C.WHITE}; "
+            f"border: 1px solid {C.WHITE}; "
+            f"padding: 2px 8px; "
+            f"font-family: \"Topaz-8\",\"Topaz\",\"Courier New\",monospace; "
+            f"font-size: {scaled_font_px(12)}px; }}")
+        ov.hide()
+        self._qs_overlay = ov
+        return ov
+
+    def _position_qs_overlay(self):
+        ov = getattr(self, '_qs_overlay', None)
+        if ov is None or not ov.isVisible():
+            return
+        ov.adjustSize()
+        vp = self.view.viewport()
+        y = vp.height() - ov.height() - 6
+        if y < 0:
+            y = 0
+        ov.move(6, y)
+
+    def _update_qs_overlay(self):
+        ov = self._ensure_qs_overlay()
+        pref = getattr(self, '_qs_prefix', '') or ''
+        n = self.model.rowCount()
+        ov.setText(f" Quick-Filter: {pref}_   ({n}) ")
+        ov.show()
+        ov.raise_()
+        self._position_qs_overlay()
 
     def set_active(self, active: bool):
         """Toggle the active visual state. Tags remain visible either way;
@@ -1011,8 +1365,32 @@ class FileLister(QWidget):
                 # path to take down the lister.
                 b.setText(label)
             b.setToolTip(f"{label}  {path}")
+            # Per-drive-kind background tint. Quopus' default grey
+            # everywhere is fine, but on Linux (and frankly also
+            # on Windows in dark theme) all drive buttons end up
+            # visually indistinguishable - which defeats the
+            # icons we just rendered. We tint the button background
+            # subtly per kind so the user can spot the type at a
+            # glance. Text + border stay black for legibility.
+            # Tints are intentionally pale (~10% saturation) so
+            # the bar doesn't look like a fruit salad.
+            _BG_BY_KIND = {
+                "home":      "#d6e8d6",  # mint-green (the user)
+                "root":      "#d6e0e8",  # sky-blue (system root)
+                "fixed":     "#dde4ef",  # steel-blue (HDD/SSD)
+                "removable": "#efe4cf",  # corn-yellow (USB)
+                "cdrom":     "#e5d6e8",  # lavender (optical)
+                "remote":    "#d6e8d8",  # sage (network)
+                "ramdisk":   "#efd6e3",  # rose (volatile)
+                "unknown":   C.WB_GREY,  # fallback to default
+            }
+            try:
+                _kind_for_bg = dt
+            except NameError:
+                _kind_for_bg = d.get("kind") or "unknown"
+            _bg = _BG_BY_KIND.get(_kind_for_bg, C.WB_GREY)
             b.setStyleSheet(
-                f"QToolButton {{ background-color: {C.WB_GREY}; "
+                f"QToolButton {{ background-color: {_bg}; "
                 f"color: {C.BLACK}; "
                 f"border: 1px outset {C.BLACK}; "
                 f"padding: 1px 3px; min-width: 18px; "
@@ -1460,6 +1838,9 @@ class FileLister(QWidget):
             pass
 
     def refresh(self):
+        # A directory change / refresh always clears an active quick
+        # filter; refresh() repopulates the model itself below.
+        self._quicksearch_reset_silent()
         self.path_edit.setText(self.fs.display_path())
         if self.fs.kind == 'remote':
             self.title.setText(f" {self.side_label}:  [REMOTE]  {self.fs.display_path()} ")
@@ -1620,14 +2001,35 @@ class FileLister(QWidget):
             except Exception:
                 pass
 
+        # Disk-usage suffix for the current local path: total /
+        # used / free of whichever drive the lister is sitting on.
+        # Updates on every refresh (selection change, refresh,
+        # navigation) so the user can watch free space tick down
+        # during a copy/move from the OTHER lister. Skipped for
+        # remote panes - FTP/SFTP don't have a POSIX disk_usage
+        # we can query without a separate roundtrip.
+        disk_suffix = ""
+        if self.fs.kind == "local":
+            try:
+                import shutil as _sh
+                u = _sh.disk_usage(str(self.current_path))
+                pct = (u.used * 100 // u.total) if u.total else 0
+                disk_suffix = (
+                    f"  |  Disk: {fmt_size(u.free)} free / "
+                    f"{fmt_size(u.total)} ({pct}% used)")
+            except (OSError, ValueError):
+                # CD drive without media, network mount that
+                # went away, etc. - skip silently.
+                pass
+
         if active_paths:
             text = (f" {t_dirs} of {n_dirs} dirs, "
                     f"{t_files} of {n_files} files, "
                     f"{fmt_size(t_size)} of {fmt_size(total_size)}"
-                    f"{suffix}{crt_suffix} ")
+                    f"{suffix}{crt_suffix}{disk_suffix} ")
         else:
             text = (f" {n_dirs} dirs, {n_files} files, "
-                    f"{fmt_size(total_size)}{suffix} ")
+                    f"{fmt_size(total_size)}{suffix}{disk_suffix} ")
         self.info_bar.setText(text)
 
     def _set_sort(self, key):
@@ -2575,6 +2977,15 @@ class FileLister(QWidget):
             "gnome-terminal, konsole, xfce4-terminal, xterm.")
 
     def _ctx_menu(self, pos):
+        # Skip the context menu if we just finished a Total
+        # Commander-style right-drag tag sweep: the user clearly
+        # wanted to tag rows, not open a menu. The flag is set
+        # by the view's mouseReleaseEvent when it detects a
+        # multi-row right-button drag. We consume the flag here
+        # so a later clean RMB click still gets the menu.
+        if getattr(self, "_suppress_next_ctx_menu", False):
+            self._suppress_next_ctx_menu = False
+            return
         self.got_focus.emit(self)
         menu = QMenu(self)
         menu.setStyleSheet(f"""
@@ -3596,6 +4007,8 @@ class FileLister(QWidget):
         """
         if getattr(self, '_filter_signal_blocked', False):
             return
+        # Switching the extension filter clears any active quick filter.
+        self._quicksearch_reset_silent()
         self._current_filter_ext = text or '*'
         # Show the active filter on the button itself - "*" or
         # ".prg" or whatever. Truncated to 6 chars + ellipsis if

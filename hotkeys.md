@@ -99,6 +99,14 @@ Classic Norton / Total Commander row.
 
 ---
 
+## Ctrl + Alt + letter
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+Alt+<letter/digit>` | **Quick-Filter** (Total Commander style) — when the file list has focus, start an inline filter showing only entries whose name begins with the typed character; keep typing to narrow, `Backspace` edits / closes, `Esc` cancels, `Enter` opens the highlighted entry. Any directory change resets the filter. On a German keyboard `AltGr+<letter>` is the same chord and works too. |
+
+---
+
 ## Ctrl + letter combos
 
 Alphabetical.
