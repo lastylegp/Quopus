@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 19:48
+# date_time: 2026-06-10 21:44
 """Telegram client for Quopus Commander (MTProto / Telethon).
 
 A full Telegram *user* client embedded as a PyQt6 dialog: it logs
@@ -203,6 +203,9 @@ class _TgWorker(QObject):
         # sometimes came back empty. We keep the real entities here
         # and hand them to iter_messages.
         self._entities: dict = {}
+        # (chat_id, msg_id) pairs already dispatched, so the NewMessage
+        # handler and the raw fallback don't double-emit the same one.
+        self._seen_msg_ids: set = set()
         self._thread = threading.Thread(
             target=self._run_loop, name="TelegramWorker",
             daemon=True)
@@ -289,6 +292,26 @@ class _TgWorker(QObject):
             # Live updates for incoming messages.
             self._client.add_event_handler(
                 self._on_new_message, events.NewMessage())
+            # Diagnostic catch-all: logs EVERY raw update the client
+            # receives. If new messages produce no "RAW update" lines,
+            # the client isn't receiving updates at all (connection /
+            # loop issue); if RAW lines appear but no "UPDATE received"
+            # lines, the NewMessage dispatch is the problem.
+            try:
+                self._client.add_event_handler(
+                    self._on_raw_update, events.Raw())
+            except Exception as e:
+                _log("could not add raw handler: %r" % e)
+            # Pull updates missed while offline and prime the update
+            # state. Without catch_up(), live updates for some chats -
+            # especially channels and large groups - may never be
+            # delivered as NewMessage events, so those chats looked
+            # like they "never updated".
+            try:
+                await self._client.catch_up()
+                _log("catch_up() completed")
+            except Exception as e:
+                _log("catch_up() failed: %r" % e)
             self.sig_authorized.emit(name)
             self.sig_status.emit("Connected as %s" % name)
         except Exception as e:
@@ -430,7 +453,8 @@ class _TgWorker(QObject):
             self.sig_error.emit(
                 "Couldn't load messages for this chat. %s" % detail)
 
-    async def _to_tgmessage(self, m, chat_id: int) -> TgMessage:
+    async def _to_tgmessage(self, m, chat_id: int,
+                            want_thumb: bool = True) -> TgMessage:
         sender = "?"
         try:
             s = await m.get_sender()
@@ -457,7 +481,7 @@ class _TgWorker(QObject):
             # thumbnail (thumb=-1), since the smallest is far too
             # low-res to display at ~400px. Encoded as base64 for
             # embedding straight into the message HTML.
-            if kind in ("photo", "video", "document"):
+            if want_thumb and kind in ("photo", "video", "document"):
                 try:
                     import io as _io
                     import base64 as _b64
@@ -488,13 +512,70 @@ class _TgWorker(QObject):
             out=bool(m.out), media=(m.media is not None),
             media_kind=kind, filename=fname, thumb_b64=thumb_b64)
 
+    async def _on_raw_update(self, update):
+        """Diagnostic + fallback. Logs every raw update. If it's a
+        new-message update and the NewMessage handler hasn't already
+        covered it, dispatch it too (deduped by message id) so live
+        updates work even when events.NewMessage() stays silent."""
+        cls = type(update).__name__
+        try:
+            _log("RAW update: %s" % cls)
+        except Exception:
+            pass
+        if cls not in ("UpdateNewMessage", "UpdateNewChannelMessage",
+                       "UpdateShortMessage", "UpdateShortChatMessage"):
+            return
+        try:
+            from telethon.tl import types as _t
+            from telethon import utils as _u
+            msg_obj = getattr(update, "message", None)
+            # Work out (chat_id, msg_id). Short* updates carry the
+            # peer id on the update itself and no Message object.
+            if isinstance(msg_obj, _t.Message):
+                mid = msg_obj.id
+                try:
+                    chat_id = _u.get_peer_id(msg_obj.peer_id)
+                except Exception:
+                    chat_id = None
+            else:
+                mid = getattr(update, "id", None)
+                chat_id = (getattr(update, "user_id", None)
+                           or getattr(update, "chat_id", None))
+            if mid is None or chat_id is None:
+                return
+            key = (chat_id, mid)
+            if key in self._seen_msg_ids:
+                return          # NewMessage handler already took it
+            self._seen_msg_ids.add(key)
+            if len(self._seen_msg_ids) > 4000:
+                self._seen_msg_ids.clear()
+            _log("RAW dispatch: chat=%r id=%r" % (chat_id, mid))
+            # Re-fetch as a proper custom.Message so _to_tgmessage has
+            # .get_sender()/.media/.file etc. (a raw types.Message
+            # doesn't expose those).
+            m = await self._client.get_messages(chat_id, ids=mid)
+            if m is None:
+                return
+            tm = await self._to_tgmessage(m, chat_id, want_thumb=False)
+            self.sig_new_message.emit(tm)
+        except Exception as e:
+            _log("RAW dispatch FAILED: %r" % e)
+
     async def _on_new_message(self, event):
         try:
             chat_id = event.chat_id
-            tm = await self._to_tgmessage(event.message, chat_id)
+            mid = getattr(event.message, "id", None)
+            _log("UPDATE received: chat=%r msg_id=%r" % (chat_id, mid))
+            if mid is not None:
+                self._seen_msg_ids.add((chat_id, mid))
+            # Live path: skip the (network) thumbnail download so the
+            # update handler stays fast and can never stall on slow
+            # media. The thumbnail fills in when the chat is opened.
+            tm = await self._to_tgmessage(
+                event.message, chat_id, want_thumb=False)
             self.sig_new_message.emit(tm)
-        except Exception:
-            pass
+        except Exception as e:
+            _log("UPDATE handler FAILED: %r" % e)
 
     # -- send / download -----------------------------------------
     def send_message(self, chat_id: int, text: str):
@@ -1215,6 +1296,35 @@ class TelegramDialog(QDialog):
     def _on_authorized(self, name: str):
         self._set_status("Connected as %s" % name)
         self._refresh_chats()
+        # Telethon push updates don't arrive in this setup, so we POLL:
+        # every few seconds re-pull the dialog list (chat order + unread)
+        # AND the open chat's newest messages. This is the actual update
+        # mechanism; the push handlers above are a bonus if they ever
+        # fire.
+        if getattr(self, "_dialog_poll_timer", None) is None:
+            self._dialog_poll_timer = QTimer(self)
+            self._dialog_poll_timer.setInterval(10000)   # 10 s
+            self._dialog_poll_timer.timeout.connect(self._poll_dialogs)
+        self._dialog_poll_timer.start()
+
+    def _poll_dialogs(self):
+        if self._worker is None:
+            return
+        import time as _t
+        stamp = _t.strftime("%H:%M:%S")
+        _log("periodic poll @ %s (open chat=%r)"
+             % (stamp, self._current_chat))
+        # 1) Chat list: order + unread from the server.
+        if not getattr(self, "_dialogs_refreshing", False):
+            self._dialogs_refreshing = True
+            self._worker.fetch_dialogs(100)
+        # 2) Open chat: pull the newest messages so new ones appear.
+        #    _on_messages merges and only rebuilds when something new
+        #    actually arrived (so no flicker while you read).
+        if self._current_chat is not None:
+            self._worker.fetch_messages(self._current_chat, 25,
+                                        before_id=0)
+        self._set_status("Live (auto-refresh %s)" % stamp)
 
     # -- chats ----------------------------------------------------
     def _refresh_chats(self):
@@ -1224,6 +1334,7 @@ class TelegramDialog(QDialog):
 
     def _on_dialogs(self, dialogs: list):
         self._dialogs = dialogs
+        self._dialogs_refreshing = False
         self._refresh_chat_list()
 
     def _refresh_chat_list(self):
@@ -1252,6 +1363,15 @@ class TelegramDialog(QDialog):
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, d.id)
             self.list_chats.addItem(item)
+        # Keep the currently open chat highlighted after a rebuild
+        # (it may have just bubbled to the top).
+        cur = getattr(self, "_current_chat", None)
+        if cur is not None:
+            for i in range(self.list_chats.count()):
+                it = self.list_chats.item(i)
+                if it.data(Qt.ItemDataRole.UserRole) == cur:
+                    self.list_chats.setCurrentItem(it)
+                    break
         if self._show_archive:
             self._set_status("Archive: %d chat%s" %
                              (n_archived,
@@ -1302,6 +1422,14 @@ class TelegramDialog(QDialog):
     def _on_chat_selected(self, item: QListWidgetItem):
         chat_id = item.data(Qt.ItemDataRole.UserRole)
         self._current_chat = chat_id
+        # Opening a chat clears its unread badge. Defer the list
+        # rebuild so we don't invalidate the item we're handling.
+        if any(d.id == chat_id and d.unread for d in self._dialogs):
+            for d in self._dialogs:
+                if d.id == chat_id:
+                    d.unread = 0
+                    break
+            QTimer.singleShot(0, self._refresh_chat_list)
         _log("chat selected: %r (id=%r)" % (item.text(), chat_id))
         self.lbl_chat.setText(item.text())
         self._set_compose_enabled(True)
@@ -1348,10 +1476,14 @@ class TelegramDialog(QDialog):
              "count=%d"
              % (chat_id, self._current_chat, before_id, len(msgs)))
 
+        prev_max = max((m.id for m in
+                        (self._msg_cache.get(chat_id) or [])),
+                       default=0)
         # Merge into cache regardless of which chat is showing, so
         # background fetches (e.g. left-over from a quick chat
         # switch) still populate the cache for a future visit.
         merged = self._merge_into_cache(chat_id, msgs)
+        new_max = max((m.id for m in merged), default=0)
 
         # "load older" releases the throttle.
         if before_id:
@@ -1359,6 +1491,12 @@ class TelegramDialog(QDialog):
 
         if chat_id != self._current_chat:
             _log("  not current chat - updated cache only")
+            return
+
+        # A newest-batch poll that brought nothing new: don't rebuild
+        # (would jump the scroll position while the user reads).
+        if (before_id == 0 and merged and new_max == prev_max):
+            self._update_cache_label()
             return
 
         self._rebuild_view(merged)
@@ -1675,6 +1813,8 @@ class TelegramDialog(QDialog):
         QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _on_new_message(self, m: TgMessage):
+        _log("UI got message: chat=%r current=%r out=%r"
+             % (m.chat_id, self._current_chat, m.out))
         # Always merge the incoming message into the per-chat
         # cache, even if the chat isn't currently displayed.
         # Without this the cache would go stale the moment the
@@ -1685,12 +1825,38 @@ class TelegramDialog(QDialog):
         except Exception:
             pass
         # Live update only if it's for the open chat; otherwise
-        # bump the unread hint by refreshing the chat list lazily.
+        # reflect the activity in the chat list (unread badge +
+        # bubble to top). Without this, chats other than the open
+        # one never updated.
         if m.chat_id == self._current_chat:
             self._append_message(m)
         else:
-            # Light touch: just reflect there's activity in status.
-            self._set_status("New message in another chat")
+            self._note_activity(m.chat_id, incoming=not m.out)
+
+    def _note_activity(self, chat_id, incoming=True):
+        """Show out-of-view activity in the chat list: bump the unread
+        badge (incoming only), bubble the chat to the top and re-render.
+        A message from a chat we don't know yet (new conversation, or
+        one beyond the initial dialog limit) triggers a one-shot dialog
+        refresh so it shows up at all."""
+        idx = next((i for i, d in enumerate(self._dialogs)
+                    if d.id == chat_id), -1)
+        if idx >= 0:
+            d = self._dialogs[idx]
+            if incoming:
+                d.unread = (d.unread or 0) + 1
+            if idx > 0:                       # bubble active chat up
+                self._dialogs.insert(0, self._dialogs.pop(idx))
+            self._refresh_chat_list()
+            if incoming:
+                self._set_status("New message in: %s" % d.name)
+        elif incoming and self._worker is not None:
+            # Unknown chat: pull the dialog list once (debounced).
+            if not getattr(self, "_dialogs_refreshing", False):
+                self._dialogs_refreshing = True
+                self._set_status(
+                    "New chat activity - refreshing list...")
+                self._worker.fetch_dialogs(100)
 
     # -- sending --------------------------------------------------
     def _send_text(self):
@@ -1837,6 +2003,12 @@ class TelegramDialog(QDialog):
 
     # -- lifecycle ------------------------------------------------
     def closeEvent(self, ev):
+        try:
+            t = getattr(self, "_dialog_poll_timer", None)
+            if t is not None:
+                t.stop()
+        except Exception:
+            pass
         try:
             if self._worker is not None:
                 self._worker.stop()

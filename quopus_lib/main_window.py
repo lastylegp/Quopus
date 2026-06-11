@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 18:57
+# date_time: 2026-06-10 12:53
 """
 Main window layout:
 
@@ -2267,6 +2267,20 @@ class QuopusMain(QMainWindow):
             self._finish_button_assignment(r, c)
             return
         self.actions.dispatch(action, param, opts=opts)
+        # Optional chained second action ("double action"): look up
+        # the live button config for this cell and, if it carries a
+        # second action, dispatch that too once the first returns.
+        # The second action runs with default options (no per-button
+        # show_output / terminal toggles) and its own param.
+        try:
+            cfg = self._buttons_layer()[r][c]
+        except (IndexError, TypeError):
+            cfg = None
+        if cfg:
+            action2 = cfg.get("action2") or ""
+            if action2:
+                self.actions.dispatch(action2, cfg.get("param2", ""),
+                                      opts=None)
 
     # ==================================================================
     # Button hover preview (text or image overlay)
@@ -2650,6 +2664,8 @@ class QuopusMain(QMainWindow):
             initial_refresh_after=current.get("refresh_after", False),
             initial_in_terminal=current.get("in_terminal", False),
             initial_hotkey=current.get("hotkey", ""),
+            action2_name=current.get("action2", ""),
+            initial_param2=current.get("param2", ""),
         )
         # Hint in window title which layer is being edited so the
         # user doesn't get confused if Shift slipped while clicking
@@ -2670,6 +2686,11 @@ class QuopusMain(QMainWindow):
             "color":  result["color"],
         }
         if result["param"]:        new_entry["param"] = result["param"]
+        # Optional chained second action ("double action").
+        if result.get("action2"):
+            new_entry["action2"] = result["action2"]
+            if result.get("param2"):
+                new_entry["param2"] = result["param2"]
         if result["hover_text"]:   new_entry["hover_text"] = result["hover_text"]
         if result["hover_image"]:  new_entry["hover_image"] = result["hover_image"]
         # Persist the per-button shell options only when set, to keep
@@ -3580,10 +3601,11 @@ class _ButtonAssignEditDialog(QDialog):
                  action_name, grid_pos, parent=None,
                  initial_hover_text="", initial_hover_image="",
                  initial_show_output=False, initial_refresh_after=False,
-                 initial_in_terminal=False, initial_hotkey=""):
+                 initial_in_terminal=False, initial_hotkey="",
+                 action2_name="", initial_param2=""):
         super().__init__(parent)
         self.setWindowTitle("Assign to button")
-        self.resize(640, 480)
+        self.resize(640, 560)
         self.setStyleSheet(f"QDialog {{ background-color: {C.WB_GREY}; }}")
 
         self._current_color = initial_color \
@@ -3657,6 +3679,33 @@ class _ButtonAssignEditDialog(QDialog):
         self.le_param.setPlaceholderText("(optional, e.g. -n %f)")
         self.le_param.setStyleSheet(edit_qss)
         form.addRow("Param:", self.le_param)
+
+        # --- Second action (optional) -----------------------------
+        # A button can chain a second action that runs right after
+        # the first one finishes ("double action"). Leave it on
+        # "(empty)" for a normal single-action button. Typical use:
+        # action 1 generates a file (external_script), action 2
+        # opens it (read). The second action gets its own param but
+        # shares no per-button shell options - it dispatches with
+        # defaults.
+        self._action2_key = (
+            action2_name if action2_name in self._action_label_map
+            else "")
+
+        def _set_action2_key(k):
+            self._action2_key = k
+        self._set_action2_key = _set_action2_key
+
+        self.btn_action2 = build_action_picker_button(
+            self, self._action2_key, _set_action2_key,
+            include_empty=True)
+        form.addRow("2nd action:", self.btn_action2)
+
+        self.le_param2 = QLineEdit(initial_param2)
+        self.le_param2.setPlaceholderText(
+            "(param for the 2nd action; same %f/%F/%p tokens)")
+        self.le_param2.setStyleSheet(edit_qss)
+        form.addRow("2nd param:", self.le_param2)
 
         # Refresh placeholder/hint when the action changes - e.g.
         # ftp_site needs a bookmark name, goto_dir needs a path.
@@ -3917,6 +3966,8 @@ class _ButtonAssignEditDialog(QDialog):
             "action":         self._action_key,
             "color":          self._current_color,
             "param":          self.le_param.text().strip(),
+            "action2":        self._action2_key,
+            "param2":         self.le_param2.text().strip(),
             "hover_text":     self.le_hover_text.text().strip(),
             "hover_image":    self.le_hover_image.text().strip(),
             "show_output":    self.cb_show_output.isChecked(),

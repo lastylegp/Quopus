@@ -1,4 +1,4 @@
-# date_time: 2026-06-07 23:11
+# date_time: 2026-06-10 13:02
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -38,9 +38,11 @@ from .config import scaled_font_px
 ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ("Viewers", [
         ("read",         "Read (internal auto)"),
+        ("view_param",   "View file from param (%f/%n/%s/%p)"),
         ("hexread",      "Hex read"),
         ("show",         "Show"),
         ("edit",         "Edit (configured editor)"),
+        ("edit_param",   "Edit file from param (%f/%n/%s/%p)"),
         ("play",         "Play"),
         ("info",         "Info / properties"),
         ("compare",      "Compare files (text/hex diff)"),

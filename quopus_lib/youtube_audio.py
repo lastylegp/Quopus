@@ -1,4 +1,4 @@
-# date_time: 2026-05-30 19:23
+# date_time: 2026-06-10 21:23
 """
 YouTube Audio Streaming - integrated Quopus feature.
 
@@ -37,6 +37,7 @@ import json
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -101,6 +102,31 @@ def set_cookie_browser(name: str):
     _COOKIE_BROWSER = (name or "auto").strip().lower()
 
 
+# Path to an exported cookies.txt (Netscape format). This is the MOST
+# reliable option on Windows: Chrome/Brave/Vivaldi cookies can no
+# longer be read by yt-dlp because of Chrome's app-bound encryption
+# (the "Failed to decrypt with DPAPI" error), so a cookies.txt
+# exported with e.g. the "Get cookies.txt LOCALLY" extension - or
+# Firefox cookies - is the dependable path. Set from host config key
+# "youtube_cookies_file".
+_COOKIE_FILE = None
+
+
+# YouTube now forces SABR streaming + PO-token binding on the default
+# "web" client, so it often returns formats WITHOUT a usable URL
+# ("Requested format is not available"). Asking yt-dlp to try several
+# player clients in one pass and merge their formats greatly raises
+# the chance that at least one returns a plain audio URL. Order/choice
+# evolves; this set works well as of mid-2026.
+_PLAYER_CLIENTS = ["default", "tv", "web_safari", "mweb", "ios"]
+
+
+def set_cookie_file(path):
+    """Point yt-dlp at an exported cookies.txt, or clear it with ''."""
+    global _COOKIE_FILE
+    _COOKIE_FILE = (str(path).strip() or None) if path else None
+
+
 def _cookie_browsers_to_try() -> list:
     """Return the list of browser names to attempt for cookies.
     'none' disables; a specific name tries only that; 'auto' (the
@@ -125,43 +151,39 @@ def _add_cookies(opts: dict, browser: Optional[str]) -> dict:
 
 
 def _extract_with_cookies(url, base_opts, download=False):
-    """Run yt-dlp extract_info, trying each candidate browser's
-    cookies until one succeeds. Falls back to a no-cookies attempt
-    first (works for many public videos and avoids touching the
-    browser at all when not needed). Raises the last error if every
-    attempt fails.
+    """Run yt-dlp extract_info, trying cookie sources in order of
+    reliability until one succeeds:
 
-    This is the single choke-point that makes YouTube's "confirm
-    you're not a bot" gate go away: when the cookie-less attempt
-    hits that error we retry with real browser cookies.
+      1. an explicit cookies.txt  (set_cookie_file) - most reliable,
+         and the only thing that works when Chrome-family cookies
+         can't be decrypted (app-bound encryption / DPAPI error),
+      2. no cookies at all        - fine for many public videos,
+      3. each candidate browser   - Firefox first (it's the one that
+         still works on Windows), then the Chromium family.
+
+    Raises the last error if every attempt fails. This is the single
+    choke-point that makes YouTube's "confirm you're not a bot" gate
+    go away once a working cookie source is available.
     """
     import yt_dlp
-    attempts = [None] + _cookie_browsers_to_try()
+
+    attempts = []
+    cf = _COOKIE_FILE
+    if cf and Path(cf).is_file():
+        o = dict(base_opts)
+        o["cookiefile"] = str(cf)
+        attempts.append(o)
+    attempts.append(dict(base_opts))                 # cookie-less
+    for browser in _cookie_browsers_to_try():
+        attempts.append(_add_cookies(base_opts, browser))
+
     last_err = None
-    for browser in attempts:
-        opts = _add_cookies(base_opts, browser)
+    for opts in attempts:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 return ydl.extract_info(url, download=download)
         except Exception as e:
             last_err = e
-            msg = str(e).lower()
-            # Only bother trying cookies if the failure looks like
-            # the bot/sign-in gate or an auth issue; for unrelated
-            # errors (e.g. video removed) trying every browser is
-            # pointless, so bail early.
-            if browser is None and (
-                    "sign in" in msg or "not a bot" in msg
-                    or "cookies" in msg or "consent" in msg
-                    or "age" in msg):
-                continue
-            if browser is None:
-                # Non-auth error on the cookie-less attempt - retry
-                # with cookies once anyway in case it helps, but
-                # don't spam all browsers.
-                continue
-            # A specific browser failed (e.g. not installed) - try
-            # the next candidate.
             continue
     if last_err is not None:
         raise last_err
@@ -454,6 +476,10 @@ def _yt_audio_stream_url(video_url: str) -> tuple[str, str, int]:
             "skip_download": True,
             "socket_timeout": 20,
             "format": fmt_str,
+            # Try multiple player clients and merge their formats so a
+            # SABR-only "web" response doesn't kill resolution.
+            "extractor_args": {
+                "youtube": {"player_client": _PLAYER_CLIENTS}},
         }
         try:
             # Cookie-aware: retries with browser cookies if YouTube
@@ -470,15 +496,26 @@ def _yt_audio_stream_url(video_url: str) -> tuple[str, str, int]:
             continue
     if last_err is not None:
         msg = str(last_err)
-        if ("sign in" in msg.lower()
-                or "not a bot" in msg.lower()):
+        low = msg.lower()
+        if ("sign in" in low or "not a bot" in low
+                or "failed to decrypt" in low or "cookies" in low
+                or "requested format" in low or "only images" in low
+                or "sabr" in low):
             raise RuntimeError(
-                "YouTube is asking to confirm you're not a bot. "
-                "Quopus tried your browser cookies but none "
-                "worked. Open the YouTube Audio settings and pick "
-                "the browser you're logged into YouTube with "
-                "(Firefox/Chrome/Edge/...), or sign in there "
-                "first.")
+                "YouTube blocked this stream. Two things are going on "
+                "right now:\n\n"
+                "1) Bot gate: Chrome/Brave/Vivaldi cookies can't be "
+                "read on Windows (DPAPI). Use the 'cookies.txt' button "
+                "with an exported cookies.txt, or sign into YouTube in "
+                "Firefox and set the cookie source to 'firefox'.\n"
+                "2) YouTube is forcing SABR / PO-token on some clients, "
+                "so formats come back without a URL ('Requested format "
+                "is not available').\n\n"
+                "The fix for both is almost always to UPDATE yt-dlp: "
+                "click 'Update yt-dlp' (or run 'pip install -U yt-dlp') "
+                "and restart Quopus. If it still fails after updating, "
+                "the video needs a PO token provider - tell me and I'll "
+                "wire that in.")
         raise RuntimeError(
             f"Could not resolve audio (tried several formats): "
             f"{last_err}")
@@ -749,9 +786,34 @@ class _AudioThread(QThread):
         try:
             return subprocess.Popen(
                 cmd, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, bufsize=0)
+                stderr=subprocess.DEVNULL, bufsize=64 * 1024)
         except Exception:
             return None
+
+    def _read_exact(self, n):
+        """Read EXACTLY n bytes from ffmpeg's stdout, looping until the
+        block is full. Returns fewer bytes only at EOF or when ffmpeg
+        is killed (seek/stop).
+
+        This is the crackle fix: the pipe hands back short reads all the
+        time, and the old code padded every short read with silence,
+        injecting gaps into the MIDDLE of the stream. Filling the block
+        first means we only ever play contiguous PCM."""
+        proc = self._proc
+        if proc is None or proc.stdout is None:
+            return b""
+        buf = bytearray()
+        while len(buf) < n and not self._stop:
+            try:
+                chunk = proc.stdout.read(n - len(buf))
+            except Exception:
+                break
+            if not chunk:
+                break                      # EOF / ffmpeg killed
+            buf += chunk
+            if self._seek_to >= 0.0:       # seek pending: don't block
+                break
+        return bytes(buf)
 
     def run(self):
         try:
@@ -776,7 +838,7 @@ class _AudioThread(QThread):
             stream = sd.OutputStream(
                 samplerate=self.SAMPLERATE,
                 channels=self.CHANNELS, dtype="int16",
-                blocksize=self.BLOCK_FRAMES)
+                blocksize=self.BLOCK_FRAMES, latency="high")
             stream.start()
         except Exception as e:
             self.failed.emit(f"Failed to open audio output: {e}")
@@ -821,7 +883,7 @@ class _AudioThread(QThread):
                 if self._paused:
                     stream.write(silence)
                     continue
-                raw = self._proc.stdout.read(bytes_per_block)
+                raw = self._read_exact(bytes_per_block)
                 if not raw:
                     # Empty read can mean EOF, or that we just
                     # killed ffmpeg for a seek - only report
@@ -832,19 +894,17 @@ class _AudioThread(QThread):
                         continue
                     self.finished.emit()
                     break
-                # Last partial block: pad with zeros.
-                if len(raw) < bytes_per_block:
-                    buf = np.frombuffer(raw, dtype=np.int16)
-                    need = (self.BLOCK_FRAMES * self.CHANNELS
-                            - buf.size)
-                    if need > 0:
-                        buf = np.concatenate(
-                            [buf, np.zeros(need, dtype=np.int16)])
-                    chunk = buf.reshape(-1, self.CHANNELS)
-                else:
-                    chunk = np.frombuffer(
-                        raw, dtype=np.int16).reshape(
-                            -1, self.CHANNELS)
+                # Normally a full block. At EOF (or right after a kill)
+                # it can be short - just play what we have, trimmed to
+                # whole frames. NO silence padding mid-stream: that was
+                # the source of the crackle.
+                frame_bytes = self.CHANNELS * 2
+                usable = len(raw) - (len(raw) % frame_bytes)
+                if usable <= 0:
+                    continue
+                chunk = np.frombuffer(
+                    raw[:usable], dtype=np.int16).reshape(
+                        -1, self.CHANNELS)
                 with self._lock:
                     vol = self._volume
                 out = chunk
@@ -897,6 +957,35 @@ def _fmt_date(yyyymmdd: str) -> str:
 # =====================================================================
 # The player window
 # =====================================================================
+class _PipUpdateThread(QThread):
+    """Runs `pip install -U yt-dlp` off the UI thread. Emits
+    done(ok, message)."""
+    done = pyqtSignal(bool, str)
+
+    def run(self):
+        import sys as _sys
+        import subprocess as _sp
+        try:
+            p = _sp.run(
+                [_sys.executable, "-m", "pip", "install", "-U",
+                 "yt-dlp"],
+                capture_output=True, text=True, timeout=300)
+            if p.returncode == 0:
+                ver = ""
+                try:
+                    for line in (p.stdout or "").splitlines():
+                        if "yt-dlp-" in line or "yt_dlp-" in line:
+                            ver = line.strip()
+                except Exception:
+                    pass
+                self.done.emit(True, ver or "updated")
+            else:
+                self.done.emit(
+                    False, (p.stderr or p.stdout or "").strip()[:400])
+        except Exception as e:
+            self.done.emit(False, str(e)[:400])
+
+
 class YouTubeAudioDialog(QDialog):
     """Non-modal YouTube audio player. Lives as long as the user
     keeps it open; Quopus stays fully usable behind it.
@@ -940,11 +1029,13 @@ class YouTubeAudioDialog(QDialog):
         self._resume_pos = 0          # seconds to resume from
 
         self._build_ui()
-        # Apply the saved cookie-browser preference (used to get
-        # past YouTube's "confirm you're not a bot" gate).
+        # Apply the saved cookie preferences (used to get past
+        # YouTube's "confirm you're not a bot" gate).
         try:
             set_cookie_browser(
                 self._cfg().get("youtube_cookies_browser", "auto"))
+            set_cookie_file(
+                self._cfg().get("youtube_cookies_file", ""))
         except Exception:
             pass
         self._load_bookmarks()
@@ -1123,6 +1214,22 @@ class YouTubeAudioDialog(QDialog):
         self._cookie_combo.currentIndexChanged.connect(
             self._on_cookie_browser_changed)
         trans.addWidget(self._cookie_combo)
+        self._cookie_file_btn = QPushButton("cookies.txt\u2026")
+        self._cookie_file_btn.setToolTip(
+            "Use an exported cookies.txt - the most reliable option on "
+            "Windows, where Chrome/Brave/Vivaldi cookies can't be "
+            "decrypted. Export it with the 'Get cookies.txt LOCALLY' "
+            "extension while signed into YouTube, then pick it here.")
+        self._cookie_file_btn.clicked.connect(self._on_pick_cookie_file)
+        trans.addWidget(self._cookie_file_btn)
+        self._yt_update_btn = QPushButton("Update yt-dlp")
+        self._yt_update_btn.setToolTip(
+            "Update yt-dlp to the latest version. YouTube changes its "
+            "anti-bot / SABR handling constantly, and an outdated "
+            "yt-dlp is the #1 reason playback that 'worked before' "
+            "suddenly stops. Restart Quopus afterwards.")
+        self._yt_update_btn.clicked.connect(self._on_update_ytdlp)
+        trans.addWidget(self._yt_update_btn)
         trans.addWidget(QLabel("Volume:"))
         self._vol = QSlider(Qt.Orientation.Horizontal)
         self._vol.setRange(0, 100)
@@ -1691,6 +1798,57 @@ class YouTubeAudioDialog(QDialog):
         self._set_status(
             f"Cookie source set to '{browser}'. "
             "Try playing a track again.")
+
+    def _on_update_ytdlp(self):
+        """Update yt-dlp via pip (best-effort, off the UI thread)."""
+        import sys as _sys
+        if getattr(_sys, "frozen", False):
+            self._set_status(
+                "Bundled build: pip can't update a frozen app. "
+                "Update the bundled yt-dlp, or run Quopus from source "
+                "to use 'Update yt-dlp'.")
+            return
+        self._yt_update_btn.setEnabled(False)
+        self._set_status("Updating yt-dlp - this can take a moment...")
+        self._pip_thread = _PipUpdateThread(self)
+        self._pip_thread.done.connect(self._on_ytdlp_updated)
+        self._pip_thread.start()
+
+    def _on_ytdlp_updated(self, ok, text):
+        self._yt_update_btn.setEnabled(True)
+        if ok:
+            self._set_status(
+                "yt-dlp updated (%s). RESTART Quopus, then try a "
+                "track again." % text)
+        else:
+            self._set_status("yt-dlp update failed: %s" % text)
+
+    def _on_pick_cookie_file(self):
+        """Choose (or clear) an exported cookies.txt for yt-dlp."""
+        from PyQt6.QtWidgets import QFileDialog, QMessageBox
+        cur = self._cfg().get("youtube_cookies_file", "") or ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select exported cookies.txt", cur,
+            "Cookies (*.txt);;All files (*)")
+        if not path:
+            if cur and QMessageBox.question(
+                    self, "Cookies",
+                    "Clear the saved cookies.txt and fall back to the "
+                    "browser cookie source?"
+                    ) == QMessageBox.StandardButton.Yes:
+                path = ""
+            else:
+                return
+        self._cfg()["youtube_cookies_file"] = path
+        set_cookie_file(path)
+        try:
+            from .config import save_config
+            save_config(self._cfg())
+        except Exception:
+            pass
+        self._set_status(
+            "Using cookies.txt. Try a track again."
+            if path else "cookies.txt cleared.")
 
     def _set_status(self, msg):
         self._status.setText(msg)

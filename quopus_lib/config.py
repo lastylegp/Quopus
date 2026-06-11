@@ -1,4 +1,4 @@
-# date_time: 2026-06-06 16:40
+# date_time: 2026-06-10 21:12
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -384,19 +384,44 @@ def _system_default_drives():
     home = str(Path.home())
     sys_name = platform.system()
     if sys_name == "Windows":
-        # Probe drive letters; only include drives that exist.
-        # Empty CD/floppy drives raise OSError instead of returning
-        # False - _safe_exists catches that.
+        # IMPORTANT (startup speed): do NOT probe each drive root with
+        # os.path.exists() - on a disconnected MAPPED NETWORK DRIVE (or
+        # an empty CD/card slot) that call BLOCKS until the redirector
+        # times out (seconds, sometimes ~30s EACH). Since this function
+        # runs at import time, one dead drive froze the whole startup
+        # before the window even appeared.
+        #
+        # GetLogicalDrives() returns a bitmask of the mounted drive
+        # letters and GetDriveTypeW() classifies them - both are pure
+        # metadata calls that never touch the device/network, so they
+        # stay instant no matter how many dead mappings exist.
         drives = [{"label": "HOME", "path": home, "kind": "home"}]
-        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+        letters = ""
+        try:
+            import ctypes
+            mask = ctypes.windll.kernel32.GetLogicalDrives()
+        except Exception:
+            mask = 0
+        if mask:
+            alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            # Skip A:/B: (legacy floppies) as before; start at C:.
+            for i, letter in enumerate(alphabet):
+                if i < 2:
+                    continue
+                if (mask >> i) & 1:
+                    letters += letter
+        else:
+            # GetLogicalDrives failed: fall back to the old probe, but
+            # only as a last resort.
+            for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+                if _safe_exists(f"{letter}:/"):
+                    letters += letter
+        for letter in letters:
             p = f"{letter}:/"
-            if _safe_exists(p):
-                # Ask the OS for the real drive type so per-type
-                # styles (tile/pill/mixed/folder) colour each
-                # button correctly. Falls back to "fixed" if the
-                # API call fails.
-                drives.append({"label": f"{letter}:", "path": p,
-                                 "kind": _win_drive_kind(p)})
+            # GetDriveTypeW is metadata-only and does not block even on
+            # an unreachable network drive.
+            drives.append({"label": f"{letter}:", "path": p,
+                             "kind": _win_drive_kind(p)})
         # Extras for typical Windows users
         drives.append({"label": "TEMP",
                          "path": str(Path(home) / "AppData"
