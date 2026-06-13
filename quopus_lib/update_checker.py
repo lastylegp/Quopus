@@ -1,4 +1,4 @@
-# date_time: 2026-06-03 18:41
+# date_time: 2026-06-13 13:10
 """GitHub update checker for Quopus Commander.
 
 Checks at startup whether the local installation is behind the
@@ -264,6 +264,13 @@ def check_for_updates(
         return UpdateInfo(
             ok=False,
             error="Couldn't locate the Quopus install directory.")
+    # Ride-along: report this build once if it's new (best-effort,
+    # off-thread). The actual reporting lives in the update module.
+    try:
+        from .update_manager import _maybe_report
+        _maybe_report()
+    except Exception:
+        pass
     # Fast path: caller hands us the last remote SHA they saw;
     # if the branch tip hasn't moved, we return immediately.
     if known_remote_sha:
