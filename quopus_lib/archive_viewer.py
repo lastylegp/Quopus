@@ -1,4 +1,4 @@
-# date_time: 2026-06-01 18:32
+# date_time: 2026-06-13 14:02
 """Internal archive viewer. Supports zip, tar.gz, tar.bz2, lha (read-only).
 
 Shows a Quopus-style list of files inside the archive, lets you:
@@ -642,6 +642,27 @@ class ArchiveViewer(QDialog):
                 from .readers import HexReader
                 v = HexReader(tmp, self)
                 v.setWindowTitle(f"Hex: {entry.name}{title_suffix}")
+            elif _is_archive_path(Path(entry.name)):
+                # The selected entry is itself an archive (zip-in-zip,
+                # lha-in-zip, ...). Open ANOTHER archive view on the
+                # extracted bytes instead of dropping into the text/
+                # hex reader. This nests to any depth - each level is
+                # a modal dialog on its own temp file.
+                v = ArchiveViewer(tmp, self)
+                try:
+                    v.setWindowTitle(
+                        f"Archive: {entry.name}{title_suffix}")
+                except Exception:
+                    pass
+                v.exec()
+                # Release the archive handle so the temp file can be
+                # removed in the finally below (ArchiveViewer doesn't
+                # close its backend by itself).
+                try:
+                    v.backend.close()
+                except Exception:
+                    pass
+                return
             else:
                 from .image_viewer import is_image, ImageViewer
                 if is_image(tmp):
