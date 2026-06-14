@@ -1,4 +1,4 @@
-# date_time: 2026-06-13 19:56
+# date_time: 2026-06-14 09:05
 """
 Network Scanner / Mapper  (Quopus premium module #9)
 ====================================================
@@ -21,7 +21,8 @@ import ipaddress
 import json
 import socket
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (ThreadPoolExecutor, as_completed, wait,
+                                FIRST_COMPLETED)
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -34,7 +35,9 @@ PORT_PRESETS = {
     "Web": [80, 81, 443, 8000, 8008, 8080, 8443, 8888],
     "Remote/Admin": [22, 23, 3389, 5900, 5901, 445, 139, 161, 623],
     "Databases": [1433, 1521, 3306, 5432, 6379, 9200, 11211, 27017],
-    "Full 1-1024": list(range(1, 1025)),
+    "Common 1-1024": list(range(1, 1025)),
+    "Registered 1-49151": list(range(1, 49152)),
+    "Full 1-65535": list(range(1, 65536)),
 }
 
 _SERVICES = {
@@ -153,10 +156,14 @@ def scan(targets: list, ports: list, timeout: float = 0.6,
          want_banner: bool = True, max_workers: int = 200,
          progress=None, stop=None) -> list:
     """Scan targets x ports. Returns list[HostResult]. `progress(done,
-    total)` and `stop()->bool` are optional callbacks for the UI."""
+    total)` and `stop()->bool` are optional callbacks for the UI.
+
+    Submission is bounded: at most a sliding window of futures is kept
+    in flight, so a full 1-65535 sweep across many hosts (millions of
+    probes) runs in constant memory instead of materialising every
+    task up front."""
     results: dict = {ip: HostResult(ip=ip) for ip in targets}
-    tasks = [(ip, p) for ip in targets for p in ports]
-    total = len(tasks)
+    total = len(targets) * len(ports)
     done = 0
 
     def work(ip, port):
@@ -165,24 +172,45 @@ def scan(targets: list, ports: list, timeout: float = 0.6,
         if _connect(ip, port, timeout):
             op = OpenPort(ip=ip, port=port, service=service_name(port))
             if want_banner:
-                op.banner = grab_banner(ip, port,
-                                        min(1.0, timeout + 0.4))
+                op.banner = grab_banner(ip, port, min(1.0, timeout + 0.4))
             return op
         return None
 
+    task_iter = ((ip, p) for ip in targets for p in ports)
+    window = max(max_workers * 8, 2048)
+    fut_arg: dict = {}
+
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(work, ip, p): (ip, p) for ip, p in tasks}
-        for fut in as_completed(futs):
-            done += 1
-            if progress:
-                progress(done, total)
+        # prime the window
+        for _ in range(window):
+            try:
+                ip, p = next(task_iter)
+            except StopIteration:
+                break
+            fut_arg[ex.submit(work, ip, p)] = (ip, p)
+
+        exhausted = False
+        while fut_arg:
+            ready, _ = wait(set(fut_arg), return_when=FIRST_COMPLETED)
+            for fut in ready:
+                fut_arg.pop(fut, None)
+                done += 1
+                if progress:
+                    progress(done, total)
+                op = fut.result()
+                if op:
+                    hr = results[op.ip]
+                    hr.alive = True
+                    hr.open_ports.append(op)
+                # top up the window unless stopping/exhausted
+                if not exhausted and not (stop and stop()):
+                    try:
+                        ip, p = next(task_iter)
+                        fut_arg[ex.submit(work, ip, p)] = (ip, p)
+                    except StopIteration:
+                        exhausted = True
             if stop and stop():
                 break
-            op = fut.result()
-            if op:
-                hr = results[op.ip]
-                hr.alive = True
-                hr.open_ports.append(op)
 
     # resolve hostnames for hosts with hits
     final = []
@@ -247,11 +275,14 @@ if _HAVE_QT:
         progress = pyqtSignal(int, int)
         done = pyqtSignal(list)
 
-        def __init__(self, targets, ports, want_banner):
+        def __init__(self, targets, ports, want_banner,
+                     max_workers=200, timeout=0.6):
             super().__init__()
             self.targets = targets
             self.ports = ports
             self.want_banner = want_banner
+            self.max_workers = max_workers
+            self.timeout = timeout
             self._stop = False
 
         def stop(self):
@@ -259,7 +290,9 @@ if _HAVE_QT:
 
         def run(self):
             res = scan(self.targets, self.ports,
+                       timeout=self.timeout,
                        want_banner=self.want_banner,
+                       max_workers=self.max_workers,
                        progress=lambda d, t: self.progress.emit(d, t),
                        stop=lambda: self._stop)
             self.done.emit(res)
@@ -323,12 +356,23 @@ if _HAVE_QT:
                 QMessageBox.information(self, "Scan", "No valid targets.")
                 return
             ports = PORT_PRESETS[self.cmb_ports.currentText()]
+            n = len(targets) * len(ports)
+            # scale concurrency to the job; ease timeout for huge sweeps
+            if n >= 200_000:
+                workers, timeout, banner = 1000, 0.4, False
+            elif n >= 20_000:
+                workers, timeout, banner = 600, 0.5, True
+            else:
+                workers, timeout, banner = 200, 0.6, True
             self.tbl.setRowCount(0)
+            note = "" if n < 100_000 else "  (large sweep - may take a while; Stop anytime)"
             self.lbl_status.setText(
-                f"Scanning {len(targets)} host(s) x {len(ports)} port(s)...")
+                f"Scanning {len(targets)} host(s) x {len(ports)} "
+                f"port(s) = {n:,} probes...{note}")
             self.btn_scan.setEnabled(False)
             self.btn_stop.setEnabled(True)
-            self._thread = _ScanThread(targets, ports, True)
+            self._thread = _ScanThread(targets, ports, banner,
+                                       max_workers=workers, timeout=timeout)
             self._thread.progress.connect(self._progress)
             self._thread.done.connect(self._finished)
             self._thread.start()
