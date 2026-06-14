@@ -1,4 +1,4 @@
-# date_time: 2026-06-10 13:02
+# date_time: 2026-06-13 19:57
 """
 Central catalog of all Quopus actions, organized into groups.
 
@@ -131,6 +131,11 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("qdrive",       "Quopus Drive connect (open dialog)"),
         ("qdrive_site",  "Quopus Drive site (direct connect to bookmark)"),
         ("database",     "Quopus Database (catalog and search archives)"),
+        ("secrets",      "Secrets / Password manager (encrypted vault, TOTP)"),
+        ("net_scanner",  "Network scanner / mapper (host + port scan)"),
+        ("storage_hub",  "Network Storage Hub (FTP/SFTP/S3/SMB/rclone)"),
+        ("cloud_dashboard", "Cloud Storage Dashboard (S3/GCS/Azure stats)"),
+        ("container_browser", "Container / Image browser (Docker)"),
     ]),
     ("Cloud storage", [
         ("rclone",       "Rclone browser (70+ cloud providers via rclone)"),
