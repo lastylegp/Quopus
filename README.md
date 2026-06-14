@@ -1219,6 +1219,85 @@ Config files (`<quopus>/config/`):
 Action: `irc`. Note: if you ever see "Unknown: irc" in the status bar, your `actions.py` is from a build before this action existed — pull the latest.
 
 
+### Secrets / Password manager (encrypted vault)
+
+A local, password-protected vault for logins, SSH keys, cloud access keys, SMB credentials, secure notes and TOTP 2FA seeds. It is the **credential backbone** the network/cloud add-ons pull from, so you never re-type secrets or keep them in plain config.
+
+**Security model**:
+- Encrypted with a key derived from your **master password** via scrypt (N=2¹⁵, r=8, p=1) — **not** the Quopus `.qpe` master key. The vendor cannot read your secrets; only your password unlocks the vault.
+- Payload is AES-256-GCM (authenticated) — tampering is detected.
+- The password is never written to disk; the derived key lives only in memory while unlocked and is dropped on lock/close. Clipboard copies auto-clear after 20 s.
+
+**Features**:
+- **Entry kinds** — login / ssh_key / cloud_key / smb / note, with fields for user (or access-key-id), secret, host, port, URL, TOTP seed, tags and notes.
+- **TOTP 2FA** — RFC 6238 (HMAC-SHA1, 30 s, 6 digits) with a live countdown next to the code.
+- **Password generator** — length + character-set options, ambiguous-character avoidance.
+- **Search / filter**, master-password change, atomic save (no half-written vault on crash).
+
+Vault file: `<quopus>/config/secrets.qvault` (override with config key `secrets_vault_path`). Dependency: `cryptography`. Action: `secrets`.
+
+
+### Network scanner / mapper
+
+Host discovery + TCP port scan + banner/service detection for a subnet or host list, with CSV/JSON export. No root needed — discovery uses a TCP "ping" (connect to common ports) and the scan is a threaded connect-scan.
+
+**Features**:
+- **Targets** — single host/IP, CIDR (`192.168.0.0/24`), dashed range (`10.0.0.10-50`), hostnames (resolved), or a mix.
+- **Port presets** — Top 20, Web, Remote/Admin, Databases, Common 1–1024, Registered 1–49151, and **Full 1–65535**. Large sweeps scale worker concurrency automatically and can be stopped at any time.
+- **Banner + service** grab for each open port; results table with IP / hostname / port / service / banner.
+- **Export** to CSV or JSON; **save a discovered host straight into the Secrets vault** as a connection entry.
+
+No external dependencies (stdlib only). Action: `net_scanner`.
+
+
+### Network Storage Hub (cross-protocol orchestrator)
+
+A **dual-pane, cross-protocol file orchestrator** — not just another single-remote browser. Each pane can be any endpoint: **Local filesystem, FTP / FTPS / SFTP** (reuses the existing FTP client — no duplicate protocol code), **S3 / S3-compatible**, or **SMB / CIFS**. Connections come from the Secrets vault.
+
+**Engine (the value-add the per-protocol browsers don't have)**:
+- **Cross-protocol transfer** — stream directly between different remotes (SFTP → S3, SMB → SFTP, S3 → Local, …) via a unified read/write interface; no manual round-trip through local disk.
+- **Recursive transfer queue** — whole directory trees, parallel workers, byte-level progress, automatic retry.
+- **Sync / mirror** — diff two endpoints by size (or SHA-256), preview a **dry-run plan** (copy / skip / delete), then apply; mirror also deletes files on the target that are absent from the source.
+- **Verify** — SHA-256 on both sides after a copy (toggle "verify copies"), or on demand for a selected pair.
+
+Dependencies: FTP/FTPS/SFTP need nothing new; **S3** needs `boto3`, **SMB** needs `smbprotocol` (both lazy — the module loads without them and tells you what to install). Action: `storage_hub`.
+
+
+### Cloud Storage Dashboard
+
+Connect S3 / S3-compatible, Google Cloud Storage or Azure Blob via a Secrets-vault `cloud_key` entry and get, per bucket/container:
+
+- **Object count + total size**, broken down by storage class.
+- **Largest** and **oldest** objects.
+- **Orphans / waste** — incomplete multipart uploads and zero-byte folder markers.
+- **Rough monthly cost estimate** from a built-in list-price table (ballpark, not billing).
+
+Aggregation is **streaming**, so it scales to millions of objects without holding them all in memory. Dependencies (lazy): `boto3` (S3), `google-cloud-storage` (GCS), `azure-storage-blob` (Azure). Action: `cloud_dashboard`.
+
+
+### Container / Image browser
+
+Browse Docker images and containers like a filesystem. Two tabs — **Images** and **Containers** — and a path browser on the right.
+
+**Features**:
+- **Walk files** of any image or container via the Docker archive API (`get_archive`/`put_archive`) — no host mount required. For an image, a throw-away stopped container is materialised to read from.
+- **Copy files in/out** (download / upload into a path).
+- **Exec** — run a command inside a running container and see its output.
+
+Dependency (lazy): the `docker` SDK (`pip install docker`). Action: `container_browser`.
+
+
+### Recent changes (June 2026)
+
+The five add-on modules above (Secrets, Network scanner, Storage Hub, Cloud Dashboard, Container browser) all register under the **Networking** action group and ship as encrypted `.qpe` modules in release builds. Other changes from the same period:
+
+- **Quick-filter** for the lister, and **button double-action** configuration.
+- **C64 KERNAL identification** custom module (with user-extendable signature DB).
+- **YouTube Audio** fixes — crackle removed (buffered pipe / full-block reads) and the "confirm you're not a bot" gate handled (cookies.txt support, Firefox-first cookie order, multi-client extractor args, in-app yt-dlp update).
+- **Telegram client** switched to a 10 s polling refresh for reliable live chat updates.
+- **Windows startup speed** — drive enumeration via `GetLogicalDrives()` instead of probing dead mapped drives.
+
+
 ### Customizable lister colors
 
 The lister panels (background, files, directories) and **per-file-extension** colors are user-configurable. Open the editor two ways:
@@ -1637,6 +1716,8 @@ External programs (Run, Shell, External Script, Execute Command, file associatio
 **Terminal:** `telnet` — opens the [Telnet / Raw TCP / SSH terminal client](#telnet--raw-tcp--ssh-terminal-client). Pass a saved session name as the `param` to one-click-reconnect to that BBS / shell. Bind to a button + hotkey for instant access to your favourite boards.
 
 **Database:** `database` — opens the [Quopus Database browser](#quopus-database-catalog--search). Non-modal browser with Files / Disks / Watch / Issues / Stats tabs; right-click results for copy-to-inactive-Lister, extract-from-D64, or reveal-in-active-Lister.
+
+**Security & Network add-ons:** `secrets` — opens the [Secrets / Password manager](#secrets--password-manager-encrypted-vault) (encrypted vault for logins, SSH / cloud / SMB keys and TOTP seeds; the credential source the other add-ons read from). `net_scanner` — opens the [Network scanner / mapper](#network-scanner--mapper) (host discovery + TCP port scan with banner/service detection and CSV/JSON export). `storage_hub` — opens the [Network Storage Hub](#network-storage-hub-cross-protocol-orchestrator) (dual-pane, cross-protocol browser over Local / FTP / FTPS / SFTP / S3 / SMB with a recursive transfer queue, sync/mirror and SHA-256 verify). `cloud_dashboard` — opens the [Cloud Storage Dashboard](#cloud-storage-dashboard) (per-bucket size/class stats, orphan detection and a monthly cost estimate for S3 / GCS / Azure). `container_browser` — opens the [Container / Image browser](#container--image-browser) (browse Docker images and containers like a filesystem, copy files in/out, exec). All five take their connection credentials from the `secrets` vault and live in the **Networking** action group.
 
 **Misc:** `about`, `config`, `quit`
 
