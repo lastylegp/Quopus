@@ -1,4 +1,4 @@
-# date_time: 2026-06-09 22:32
+# date_time: 2026-06-15 18:21
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -37,6 +37,58 @@ from .palette import (
 from .dirmodel import DirModel, DirEntry, TaggedItemDelegate
 from .readers import TextReader, HexReader
 from .config import scaled_font_px
+
+
+# ----------------------------------------------------------------------
+# Per-directory Size-column display (bytes vs C64 blocks)
+#
+# The "blocks" view is bound to a directory SUBTREE: enabling it on a
+# folder makes that folder and ALL its descendants show C64 disk-blocks
+# (256 B = 1 block); navigating out re-checks against the saved set.
+# The set of "blocks roots" is persisted in config['size_blocks_dirs'].
+# ----------------------------------------------------------------------
+def _sd_key(p):
+    return os.path.normcase(os.path.normpath(str(p)))
+
+
+def _sd_covers(root, path):
+    """True if `root` is `path` itself or an ancestor of it."""
+    r, q = _sd_key(root), _sd_key(path)
+    if r == q:
+        return True
+    if not r.endswith(os.sep):
+        r = r + os.sep
+    return q.startswith(r)
+
+
+def blocks_dirs(config):
+    return list(config.get("size_blocks_dirs", []) or [])
+
+
+def dir_uses_blocks(config, path):
+    """Effective Size mode for `path`: blocks if it sits in (or is) a
+    saved blocks-root subtree, else bytes."""
+    for root in blocks_dirs(config):
+        if _sd_covers(root, path):
+            return True
+    return False
+
+
+def set_dir_blocks(config, path, on):
+    """Enable/disable the blocks view for the subtree rooted at `path`.
+    Enabling adds `path` as a root (and drops now-redundant descendant
+    roots). Disabling removes every saved root that covers `path`, so
+    the current location reliably reverts to bytes."""
+    roots = [_sd_key(r) for r in blocks_dirs(config)]
+    key = _sd_key(path)
+    if on:
+        roots = [r for r in roots if not _sd_covers(path, r)]
+        if not any(_sd_covers(r, path) for r in roots):
+            roots.append(key)
+    else:
+        roots = [r for r in roots if not _sd_covers(r, path)]
+    config["size_blocks_dirs"] = sorted(set(roots))
+    return config["size_blocks_dirs"]
 
 
 class _DropSourceShim:
@@ -417,8 +469,8 @@ class FileLister(QWidget):
         try:
             mw = self.window()
             if mw and hasattr(mw, 'config'):
-                self.model.show_blocks = (
-                    mw.config.get('size_display', 'bytes') == 'blocks')
+                self.model.show_blocks = dir_uses_blocks(
+                    mw.config, self.current_path)
         except Exception:
             pass
         self.is_active = False
@@ -820,19 +872,28 @@ class FileLister(QWidget):
             self.toggle_non_dos83()
 
     def _set_size_display(self, mode: str):
-        """Switch the Size column between 'bytes' and 'blocks'.
-        Persists to global config and applies to BOTH listers via
-        the main-window broadcast helper, so they stay consistent."""
+        """Bind the Size column to 'bytes' or 'blocks' for the CURRENT
+        directory subtree (this folder + all descendants) and persist
+        it. Navigating elsewhere re-checks against the saved set, so
+        the choice follows the directory, not the whole app."""
         if mode not in ("bytes", "blocks"):
             return
         try:
             w = self.window()
-            if hasattr(w, '_apply_size_display'):
-                w._apply_size_display(mode)
-            else:
-                # Fallback for unparented test usage
-                self.model.show_blocks = (mode == "blocks")
-                self.model.layoutChanged.emit()
+            cfg = getattr(w, 'config', None)
+            if cfg is not None:
+                set_dir_blocks(cfg, self.current_path, mode == "blocks")
+                try:
+                    from .config import save_config
+                    save_config(cfg)
+                except Exception:
+                    pass
+                if hasattr(w, '_reeval_size_display'):
+                    w._reeval_size_display()
+                    return
+            # Fallback for unparented test usage
+            self.model.show_blocks = (mode == "blocks")
+            self.model.layoutChanged.emit()
         except Exception:
             pass
 
@@ -1856,6 +1917,18 @@ class FileLister(QWidget):
         else:
             self.title.setText(f" {self.side_label}: {self.current_path} ")
             self.btn_disconnect.hide()
+
+        # Size column is directory-bound: re-check whether THIS folder
+        # (or an ancestor) is configured for the C64-blocks view. Runs
+        # on every navigation/refresh so going back reverts correctly.
+        try:
+            mw = self.window()
+            if (mw and hasattr(mw, 'config')
+                    and getattr(self.fs, 'kind', 'local') != 'remote'):
+                self.model.show_blocks = dir_uses_blocks(
+                    mw.config, self.current_path)
+        except Exception:
+            pass
 
         entries = []
         total_size = 0

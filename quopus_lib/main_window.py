@@ -1,4 +1,4 @@
-# date_time: 2026-06-10 12:53
+# date_time: 2026-06-15 18:21
 """
 Main window layout:
 
@@ -326,8 +326,10 @@ class QuopusMain(QMainWindow):
         # __init__ (parent is set later), so apply size_display here
         # explicitly. This survives restart because size_display is
         # persisted in quopus.cfg.
-        size_mode = self.config.get("size_display", "bytes")
-        self.left_lister.model.show_blocks = (size_mode == "blocks")
+        size_mode = self.config.get("size_display", "bytes")  # legacy
+        from .lister import dir_uses_blocks as _dub
+        self.left_lister.model.show_blocks = _dub(
+            self.config, self.left_lister.current_path)
         self.left_lister.path_changed.connect(lambda p: self._save_path("left_path", p))
         self.left_lister.got_focus.connect(self._on_lister_focus)
         self.left_lister.tab_pressed.connect(self._on_tab)
@@ -359,7 +361,8 @@ class QuopusMain(QMainWindow):
 
         self.right_lister = FileLister(self.config["right_path"], "QUOPUS.2")
         # Apply size_display setting (see comment above for left_lister)
-        self.right_lister.model.show_blocks = (size_mode == "blocks")
+        self.right_lister.model.show_blocks = _dub(
+            self.config, self.right_lister.current_path)
         self.right_lister.path_changed.connect(lambda p: self._save_path("right_path", p))
         self.right_lister.got_focus.connect(self._on_lister_focus)
         self.right_lister.tab_pressed.connect(self._on_tab)
@@ -1699,40 +1702,48 @@ class QuopusMain(QMainWindow):
         }.get(layer, "main layer")
 
     def _apply_size_display(self, mode: str):
-        """Switch both listers' Size columns between 'bytes' and
-        'blocks' display, and persist the choice to config."""
+        """Bind the Size-column 'blocks' view to the ACTIVE lister's
+        current directory subtree (or revert it), persist, then
+        re-evaluate both listers. Directory-bound, not global."""
         if mode not in ("bytes", "blocks"):
             return
-        self.config["size_display"] = mode
-        errors = []
-        for which, lst in (("left", self.left_lister),
-                            ("right", self.right_lister)):
+        from .lister import set_dir_blocks
+        try:
+            lst = self._active_lister()[0]
+        except Exception:
+            lst = self.left_lister
+        set_dir_blocks(self.config, lst.current_path, mode == "blocks")
+        save_config(self.config)
+        self._reeval_size_display()
+        try:
+            self._status(f"Size column for {lst.current_path} "
+                         f"+ subdirs: {mode}")
+        except Exception:
+            pass
+
+    def _reeval_size_display(self):
+        """Re-apply the directory-bound Size mode to both listers from
+        each lister's current path, and repaint the Size column. Pure
+        refresh - does not change the saved blocks-roots set."""
+        from .lister import dir_uses_blocks
+        from .dirmodel import COL_SIZE
+        from PyQt6.QtCore import Qt as _Qt
+        for lst in (self.left_lister, self.right_lister):
             try:
-                lst.model.show_blocks = (mode == "blocks")
-                # Force a real repaint of the Size column. layoutChanged
-                # alone isn't enough on QTreeView - the cell's display
-                # text comes from a cached QString that only refreshes
-                # when dataChanged is emitted with DisplayRole. Emit
-                # for the whole Size column (col 2) across all rows.
-                from .dirmodel import COL_SIZE
-                from PyQt6.QtCore import Qt as _Qt
+                if getattr(lst.fs, 'kind', 'local') != 'remote':
+                    lst.model.show_blocks = dir_uses_blocks(
+                        self.config, lst.current_path)
+                # Force a real repaint of the Size column (cached
+                # display text only refreshes on a dataChanged emit).
                 n = len(lst.model.order)
                 if n > 0:
                     tl = lst.model.index(0, COL_SIZE)
                     br = lst.model.index(n - 1, COL_SIZE)
                     lst.model.dataChanged.emit(
                         tl, br, [_Qt.ItemDataRole.DisplayRole])
-                # Also force the view to update visually
                 lst.view.viewport().update()
-            except Exception as e:
-                errors.append(f"{which}: {e}")
+            except Exception:
                 import traceback; traceback.print_exc()
-        save_config(self.config)
-        if errors:
-            self._status(f"Size display: {mode}  (errors: "
-                          f"{'; '.join(errors)})")
-        else:
-            self._status(f"Size display switched to: {mode}")
 
     def _on_add_ftp_bookmark_request(self, initial: dict):
         """Lister asked to bookmark its current FTP connection.
