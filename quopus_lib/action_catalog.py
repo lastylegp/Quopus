@@ -158,6 +158,7 @@ ACTION_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("System", [
         ("config",  "Config"),
+        ("reload_custom_modules", "Reload custom modules"),
         ("lister_colors", "Lister colors (bg, files, dirs, extensions)"),
         ("show_drives", "Drives overview (free space, navigate)"),
         ("license", "License info / register Pro"),
