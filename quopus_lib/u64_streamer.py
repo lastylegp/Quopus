@@ -1,4 +1,4 @@
-# date_time: 2026-05-28 00:26
+# date_time: 2026-06-20 12:51
 """Ultimate 64 VIC video streamer for Quopus.
 
 Python port of DusteDdk/u64view (https://github.com/DusteDdk/u64view).
@@ -255,7 +255,7 @@ def send_telnet_sequence(host: str, data: bytes,
 import urllib.request
 import urllib.parse
 import json as _json
-from .config import scaled_font_px
+from .config import scaled_font_px, scaled_px
 
 
 def _u64_http_post(host: str, path: str, body: bytes,
@@ -2549,7 +2549,7 @@ class ReferencesDialog(QDialog):
         bar.setSpacing(6)
         self.btn_reanalyze = QPushButton("Re-analyze")
         self.btn_reanalyze.setStyleSheet(button_qss("blue"))
-        self.btn_reanalyze.setFixedWidth(100)
+        self.btn_reanalyze.setMinimumWidth(scaled_px(100))
         self.btn_reanalyze.setToolTip(
             "Re-run the static analysis on the cached RAM dump. "
             "Cheap; no I/O.")
@@ -2559,7 +2559,7 @@ class ReferencesDialog(QDialog):
 
         self.btn_reread = QPushButton("Re-read RAM")
         self.btn_reread.setStyleSheet(button_qss("green"))
-        self.btn_reread.setFixedWidth(100)
+        self.btn_reread.setMinimumWidth(scaled_px(100))
         self.btn_reread.setToolTip(
             "Read the full $0000-$FFFF RAM again from the backend "
             "and re-analyze. Use when the running program has "
@@ -2573,7 +2573,7 @@ class ReferencesDialog(QDialog):
 
         btn_close = QPushButton("Close")
         btn_close.setStyleSheet(button_qss("red"))
-        btn_close.setFixedWidth(70)
+        btn_close.setMinimumWidth(scaled_px(70))
         btn_close.clicked.connect(self.close)
         bar.addWidget(btn_close)
         layout.addLayout(bar)
@@ -2827,7 +2827,7 @@ class CodePatternDialog(QDialog):
         bar.setSpacing(6)
         self.btn_reanalyze = QPushButton("Re-analyze")
         self.btn_reanalyze.setStyleSheet(button_qss("blue"))
-        self.btn_reanalyze.setFixedWidth(100)
+        self.btn_reanalyze.setMinimumWidth(scaled_px(100))
         self.btn_reanalyze.setToolTip(
             "Re-run the pattern search on the cached RAM dump.")
         self.btn_reanalyze.clicked.connect(self._populate)
@@ -2836,7 +2836,7 @@ class CodePatternDialog(QDialog):
 
         self.btn_reread = QPushButton("Re-read RAM")
         self.btn_reread.setStyleSheet(button_qss("green"))
-        self.btn_reread.setFixedWidth(100)
+        self.btn_reread.setMinimumWidth(scaled_px(100))
         self.btn_reread.setToolTip(
             "Read the full $0000-$FFFF RAM again and re-analyze.")
         self.btn_reread.clicked.connect(self._start_read)
@@ -2856,7 +2856,7 @@ class CodePatternDialog(QDialog):
 
         btn_close = QPushButton("Close")
         btn_close.setStyleSheet(button_qss("red"))
-        btn_close.setFixedWidth(70)
+        btn_close.setMinimumWidth(scaled_px(70))
         btn_close.clicked.connect(self.close)
         bar.addWidget(btn_close)
         layout.addLayout(bar)
@@ -3260,7 +3260,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_refresh = QPushButton("Refresh")
         self.btn_refresh.setStyleSheet(button_qss("green"))
-        self.btn_refresh.setFixedWidth(90)
+        self.btn_refresh.setMinimumWidth(scaled_px(90))
         self.btn_refresh.setToolTip(
             "Re-read the same memory range from the U64")
         self.btn_refresh.clicked.connect(self._start_read)
@@ -3285,7 +3285,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_save = QPushButton("Save...")
         self.btn_save.setStyleSheet(button_qss("blue"))
-        self.btn_save.setFixedWidth(80)
+        self.btn_save.setMinimumWidth(scaled_px(80))
         self.btn_save.setToolTip(
             "Save raw bytes (.bin) or current text view")
         self.btn_save.clicked.connect(self._on_save)
@@ -3294,7 +3294,7 @@ class MemoryViewDialog(QDialog):
 
         btn_close = QPushButton("Close")
         btn_close.setStyleSheet(button_qss("red"))
-        btn_close.setFixedWidth(70)
+        btn_close.setMinimumWidth(scaled_px(70))
         btn_close.clicked.connect(self.close)
         bar.addWidget(btn_close)
 
@@ -3311,7 +3311,7 @@ class MemoryViewDialog(QDialog):
         search_bar.setSpacing(6)
         self.btn_search_start = QPushButton("Start")
         self.btn_search_start.setStyleSheet(button_qss("blue"))
-        self.btn_search_start.setFixedWidth(70)
+        self.btn_search_start.setMinimumWidth(scaled_px(70))
         self.btn_search_start.setToolTip(
             "Take an initial snapshot of the current memory range. "
             "All addresses become candidates; the Changed/Increased/"
@@ -3321,7 +3321,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_search_changed = QPushButton("Changed")
         self.btn_search_changed.setStyleSheet(button_qss("orange"))
-        self.btn_search_changed.setFixedWidth(80)
+        self.btn_search_changed.setMinimumWidth(scaled_px(80))
         self.btn_search_changed.setToolTip(
             "Keep only addresses whose value changed since the last "
             "snapshot (Start or last filter click).")
@@ -3332,7 +3332,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_search_inc = QPushButton("Increased")
         self.btn_search_inc.setStyleSheet(button_qss("orange"))
-        self.btn_search_inc.setFixedWidth(85)
+        self.btn_search_inc.setMinimumWidth(scaled_px(85))
         self.btn_search_inc.setToolTip(
             "Keep only addresses whose value is now strictly greater "
             "than at the last snapshot.")
@@ -3343,7 +3343,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_search_dec = QPushButton("Decreased")
         self.btn_search_dec.setStyleSheet(button_qss("orange"))
-        self.btn_search_dec.setFixedWidth(90)
+        self.btn_search_dec.setMinimumWidth(scaled_px(90))
         self.btn_search_dec.setToolTip(
             "Keep only addresses whose value is now strictly smaller "
             "than at the last snapshot.")
@@ -3354,7 +3354,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_search_unchanged = QPushButton("Unchanged")
         self.btn_search_unchanged.setStyleSheet(button_qss("orange"))
-        self.btn_search_unchanged.setFixedWidth(95)
+        self.btn_search_unchanged.setMinimumWidth(scaled_px(95))
         self.btn_search_unchanged.setToolTip(
             "Keep only addresses whose value is exactly equal to the "
             "last snapshot (e.g. constants, idle counters).")
@@ -3374,7 +3374,7 @@ class MemoryViewDialog(QDialog):
         # echte Lifecount-Counter bleibt uebrig.
         self.btn_search_value = QPushButton("= Value")
         self.btn_search_value.setStyleSheet(button_qss("orange"))
-        self.btn_search_value.setFixedWidth(70)
+        self.btn_search_value.setMinimumWidth(scaled_px(70))
         self.btn_search_value.setToolTip(
             "Keep only addresses whose value matches the entered byte. "
             "Format: decimal (3, 100, 255) or hex ($03, 0x03). "
@@ -3383,7 +3383,7 @@ class MemoryViewDialog(QDialog):
         search_bar.addWidget(self.btn_search_value)
 
         self.ed_value = QLineEdit()
-        self.ed_value.setFixedWidth(60)
+        self.ed_value.setMinimumWidth(scaled_px(60))
         self.ed_value.setPlaceholderText("3 / $03")
         self.ed_value.setToolTip(
             "Byte value to search for. Decimal (0-255) or hex with "
@@ -3400,7 +3400,7 @@ class MemoryViewDialog(QDialog):
         # auf Code: "wo wird in dieser ROM die '3' fuer 3 Leben geladen?"
         self.btn_find_loads = QPushButton("Find loads")
         self.btn_find_loads.setStyleSheet(button_qss("blue"))
-        self.btn_find_loads.setFixedWidth(80)
+        self.btn_find_loads.setMinimumWidth(scaled_px(80))
         self.btn_find_loads.setToolTip(
             "Find all code locations where this byte value is loaded "
             "or compared as immediate (LDA/LDX/LDY/CMP/CPX/CPY/ADC/SBC "
@@ -3418,7 +3418,7 @@ class MemoryViewDialog(QDialog):
 
         self.btn_search_reset = QPushButton("Reset")
         self.btn_search_reset.setStyleSheet(button_qss("red"))
-        self.btn_search_reset.setFixedWidth(60)
+        self.btn_search_reset.setMinimumWidth(scaled_px(60))
         self.btn_search_reset.setToolTip(
             "Clear the search: show all addresses again.")
         self.btn_search_reset.clicked.connect(self._on_search_reset)
@@ -4982,7 +4982,7 @@ class U64ConfigDialog(QDialog):
             "don't show a device picker (or where the user\n"
             "doesn't pick one) will use this device. The active\n"
             "slot is marked with a star in the dropdown.")
-        self.btn_set_active.setFixedWidth(110)
+        self.btn_set_active.setMinimumWidth(scaled_px(110))
         self.btn_set_active.clicked.connect(
             self._on_set_active_slot)
         slot_row.addWidget(self.btn_set_active)
@@ -5020,7 +5020,7 @@ class U64ConfigDialog(QDialog):
         host_row.setSpacing(4)
         host_row.addWidget(self.ed_host, 1)
         btn_discover = QPushButton("Discover...")
-        btn_discover.setFixedWidth(90)
+        btn_discover.setMinimumWidth(scaled_px(90))
         btn_discover.setToolTip(
             "Scan the local network for Ultimate devices.\n"
             "Requires Ultimate Ident service to be enabled\n"
@@ -5028,7 +5028,7 @@ class U64ConfigDialog(QDialog):
         btn_discover.clicked.connect(self._on_discover)
         host_row.addWidget(btn_discover)
         btn_test = QPushButton("Test")
-        btn_test.setFixedWidth(50)
+        btn_test.setMinimumWidth(scaled_px(50))
         btn_test.setToolTip(
             "Test the connection by GETting /v1/info from the\n"
             "configured host. Shows the device firmware version\n"
@@ -5100,7 +5100,7 @@ class U64ConfigDialog(QDialog):
         scr_row.setSpacing(4)
         scr_row.addWidget(self.ed_screenshot_dir, 1)
         btn_browse_scr = QPushButton("Browse...")
-        btn_browse_scr.setFixedWidth(90)
+        btn_browse_scr.setMinimumWidth(scaled_px(90))
         btn_browse_scr.setToolTip(
             "Where the streamer saves PNG screenshots from the\n"
             "Snap button. Empty means use <quopus_project>/screenshots/\n"
@@ -5132,12 +5132,12 @@ class U64ConfigDialog(QDialog):
         bar.addStretch()
         btn_cancel = QPushButton("Cancel")
         btn_cancel.setStyleSheet(button_qss("red"))
-        btn_cancel.setFixedWidth(80)
+        btn_cancel.setMinimumWidth(scaled_px(80))
         btn_cancel.clicked.connect(self.reject)
         bar.addWidget(btn_cancel)
         btn_ok = QPushButton("OK")
         btn_ok.setStyleSheet(button_qss("green"))
-        btn_ok.setFixedWidth(80)
+        btn_ok.setMinimumWidth(scaled_px(80))
         btn_ok.clicked.connect(self.accept)
         bar.addWidget(btn_ok)
         layout.addLayout(bar)
@@ -5483,7 +5483,7 @@ class U64MountDialog(QDialog):
         self.ed_file.setPlaceholderText(
             "Path to D64/D71/D81/G64/G71/G81 file")
         btn_browse = QPushButton("Browse...")
-        btn_browse.setFixedWidth(80)
+        btn_browse.setMinimumWidth(scaled_px(80))
         btn_browse.clicked.connect(self._on_browse)
         file_row = QHBoxLayout()
         file_row.setContentsMargins(0, 0, 0, 0)
@@ -5530,14 +5530,14 @@ class U64MountDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(10, 0, 10, 10)
         btn_show = QPushButton("Show current")
-        btn_show.setFixedWidth(110)
+        btn_show.setMinimumWidth(scaled_px(110))
         btn_show.setToolTip(
             "Query the U64 for the disk currently mounted on the\n"
             "selected drive (GET /v1/drives).")
         btn_show.clicked.connect(self._on_show_current)
         btn_row.addWidget(btn_show)
         btn_unmount = QPushButton("Unmount drive")
-        btn_unmount.setFixedWidth(110)
+        btn_unmount.setMinimumWidth(scaled_px(110))
         btn_unmount.setStyleSheet(button_qss("orange"))
         btn_unmount.setToolTip(
             "Remove the currently mounted disk from the selected\n"
@@ -5545,7 +5545,7 @@ class U64MountDialog(QDialog):
         btn_unmount.clicked.connect(self._on_unmount)
         btn_row.addWidget(btn_unmount)
         btn_drive_reset = QPushButton("Reset drive")
-        btn_drive_reset.setFixedWidth(90)
+        btn_drive_reset.setMinimumWidth(scaled_px(90))
         btn_drive_reset.setStyleSheet(button_qss("blue"))
         btn_drive_reset.clicked.connect(self._on_drive_reset)
         btn_row.addWidget(btn_drive_reset)
@@ -5696,7 +5696,7 @@ class U64DriveStatusDialog(QDialog):
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 0, 10, 10)
         self.btn_refresh = QPushButton("Refresh")
-        self.btn_refresh.setFixedWidth(90)
+        self.btn_refresh.setMinimumWidth(scaled_px(90))
         self.btn_refresh.clicked.connect(self._refresh)
         bar.addWidget(self.btn_refresh)
         bar.addStretch(1)
@@ -5835,14 +5835,14 @@ class U64ConfigEditorDialog(QDialog):
         bar = QHBoxLayout()
         bar.setContentsMargins(10, 0, 10, 10)
         btn_refresh = QPushButton("Refresh all")
-        btn_refresh.setFixedWidth(100)
+        btn_refresh.setMinimumWidth(scaled_px(100))
         btn_refresh.setToolTip(
             "Re-fetch every category from the device, discarding\n"
             "any unsaved edits.")
         btn_refresh.clicked.connect(self._fetch_all)
         bar.addWidget(btn_refresh)
         btn_apply = QPushButton("Apply")
-        btn_apply.setFixedWidth(80)
+        btn_apply.setMinimumWidth(scaled_px(80))
         btn_apply.setStyleSheet(button_qss("green"))
         btn_apply.setToolTip(
             "Send all pending edits to the device via bulk POST.\n"
@@ -5852,7 +5852,7 @@ class U64ConfigEditorDialog(QDialog):
         bar.addWidget(btn_apply)
         bar.addSpacing(20)
         btn_save = QPushButton("Save to Flash")
-        btn_save.setFixedWidth(120)
+        btn_save.setMinimumWidth(scaled_px(120))
         btn_save.setStyleSheet(button_qss("orange"))
         btn_save.setToolTip(
             "Write the current configuration to non-volatile memory\n"
@@ -5860,7 +5860,7 @@ class U64ConfigEditorDialog(QDialog):
         btn_save.clicked.connect(self._on_save_flash)
         bar.addWidget(btn_save)
         btn_load = QPushButton("Load from Flash")
-        btn_load.setFixedWidth(120)
+        btn_load.setMinimumWidth(scaled_px(120))
         btn_load.setToolTip(
             "Restore the configuration to what's saved in flash.")
         btn_load.clicked.connect(self._on_load_flash)
@@ -5872,7 +5872,7 @@ class U64ConfigEditorDialog(QDialog):
         # bulk-config endpoint as Save to Flash, but with the data
         # stored on the PC as a human-readable JSON dump.
         btn_save_file = QPushButton("Save to File...")
-        btn_save_file.setFixedWidth(120)
+        btn_save_file.setMinimumWidth(scaled_px(120))
         btn_save_file.setStyleSheet(button_qss("blue"))
         btn_save_file.setToolTip(
             "Save the current configuration to a named JSON file\n"
@@ -5882,7 +5882,7 @@ class U64ConfigEditorDialog(QDialog):
         btn_save_file.clicked.connect(self._on_save_to_file)
         bar.addWidget(btn_save_file)
         btn_load_file = QPushButton("Load from File...")
-        btn_load_file.setFixedWidth(130)
+        btn_load_file.setMinimumWidth(scaled_px(130))
         btn_load_file.setStyleSheet(button_qss("blue"))
         btn_load_file.setToolTip(
             "Load a previously-saved JSON configuration from the PC,\n"
@@ -5891,7 +5891,7 @@ class U64ConfigEditorDialog(QDialog):
         bar.addWidget(btn_load_file)
         bar.addSpacing(12)
         btn_factory = QPushButton("Factory Reset")
-        btn_factory.setFixedWidth(110)
+        btn_factory.setMinimumWidth(scaled_px(110))
         btn_factory.setStyleSheet(button_qss("red"))
         btn_factory.setToolTip(
             "Reset current config to factory defaults.\n"
@@ -6428,12 +6428,12 @@ class U64BackupDialog(QDialog):
         bar.setContentsMargins(10, 10, 10, 10)
         btn_backup = QPushButton("Backup to file...")
         btn_backup.setStyleSheet(button_qss("green"))
-        btn_backup.setFixedWidth(140)
+        btn_backup.setMinimumWidth(scaled_px(140))
         btn_backup.clicked.connect(self._on_backup)
         bar.addWidget(btn_backup)
         btn_restore = QPushButton("Restore from file...")
         btn_restore.setStyleSheet(button_qss("orange"))
-        btn_restore.setFixedWidth(150)
+        btn_restore.setMinimumWidth(scaled_px(150))
         btn_restore.clicked.connect(self._on_restore)
         bar.addWidget(btn_restore)
         bar.addStretch(1)
@@ -6685,7 +6685,7 @@ class U64Streamer(QDialog):
 
         self.btn_config = QPushButton("Config...")
         self.btn_config.setStyleSheet(button_qss("blue"))
-        self.btn_config.setFixedWidth(90)
+        self.btn_config.setMinimumWidth(scaled_px(90))
         self.btn_config.setToolTip(
             "Set the U64's host/IP and the video/audio/telnet ports")
         self.btn_config.clicked.connect(self._on_config)
@@ -6693,7 +6693,7 @@ class U64Streamer(QDialog):
 
         self.btn_start = QPushButton("Start")
         self.btn_start.setStyleSheet(button_qss("green"))
-        self.btn_start.setFixedWidth(70)
+        self.btn_start.setMinimumWidth(scaled_px(70))
         self.btn_start.setToolTip(
             "Start receiving + tell the U64 to begin streaming")
         self.btn_start.clicked.connect(self._on_start)
@@ -6701,7 +6701,7 @@ class U64Streamer(QDialog):
 
         self.btn_stop = QPushButton("Stop")
         self.btn_stop.setStyleSheet(button_qss("red"))
-        self.btn_stop.setFixedWidth(70)
+        self.btn_stop.setMinimumWidth(scaled_px(70))
         self.btn_stop.setEnabled(False)
         self.btn_stop.setToolTip(
             "Stop the stream and tell the U64 to stop sending")
@@ -6710,7 +6710,7 @@ class U64Streamer(QDialog):
 
         self.btn_reset = QPushButton("Reset")
         self.btn_reset.setStyleSheet(button_qss("orange"))
-        self.btn_reset.setFixedWidth(70)
+        self.btn_reset.setMinimumWidth(scaled_px(70))
         self.btn_reset.setToolTip("Send reset sequence to the U64")
         self.btn_reset.clicked.connect(self._on_reset)
         bar.addWidget(self.btn_reset)
@@ -6720,7 +6720,7 @@ class U64Streamer(QDialog):
         # a runaway program without losing state.
         self.btn_pause = QPushButton("Pause")
         self.btn_pause.setStyleSheet(button_qss("blue"))
-        self.btn_pause.setFixedWidth(60)
+        self.btn_pause.setMinimumWidth(scaled_px(60))
         self.btn_pause.setCheckable(True)
         self.btn_pause.setToolTip(
             "Pause / Resume the C64 (DMA freeze).\n"
@@ -6734,7 +6734,7 @@ class U64Streamer(QDialog):
         # Toggles in/out of the Ultimate menu system.
         self.btn_menu = QPushButton("Menu")
         self.btn_menu.setStyleSheet(button_qss("blue"))
-        self.btn_menu.setFixedWidth(56)
+        self.btn_menu.setMinimumWidth(scaled_px(56))
         self.btn_menu.setToolTip(
             "Simulate pressing the Ultimate's Menu button.\n"
             "Enters or exits the Ultimate menu depending on\n"
@@ -6746,7 +6746,7 @@ class U64Streamer(QDialog):
         # than Reset). Re-init's cartridge config etc.
         self.btn_reboot = QPushButton("Reboot")
         self.btn_reboot.setStyleSheet(button_qss("orange"))
-        self.btn_reboot.setFixedWidth(70)
+        self.btn_reboot.setMinimumWidth(scaled_px(70))
         self.btn_reboot.setToolTip(
             "Reboot the Ultimate firmware (re-init's cartridge\n"
             "config + reset). Heavier than a plain Reset.")
@@ -6758,7 +6758,7 @@ class U64Streamer(QDialog):
         # machine to turn it back on.
         self.btn_poweroff = QPushButton("Off")
         self.btn_poweroff.setStyleSheet(button_qss("red"))
-        self.btn_poweroff.setFixedWidth(50)
+        self.btn_poweroff.setMinimumWidth(scaled_px(50))
         self.btn_poweroff.setToolTip(
             "Power off the Ultimate 64 (Ultimate-II+ doesn't\n"
             "support this). You'll have to physically power it\n"
@@ -6772,7 +6772,7 @@ class U64Streamer(QDialog):
         # active.
         self.btn_screenshot = QPushButton("Snap")
         self.btn_screenshot.setStyleSheet(button_qss("blue"))
-        self.btn_screenshot.setFixedWidth(56)
+        self.btn_screenshot.setMinimumWidth(scaled_px(56))
         self.btn_screenshot.setToolTip(
             "Capture current video frame as a PNG.\n"
             "Saved to ~/Pictures/Ultimate64/ (or %USERPROFILE%\\Pictures\\Ultimate64\\)\n"
@@ -6788,7 +6788,7 @@ class U64Streamer(QDialog):
         # PATH, PNG-sequence otherwise).
         self.btn_record = QPushButton("Rec")
         self.btn_record.setStyleSheet(button_qss("blue"))
-        self.btn_record.setFixedWidth(56)
+        self.btn_record.setMinimumWidth(scaled_px(56))
         self.btn_record.setCheckable(True)
         self.btn_record.setToolTip(
             "Record video to MP4 (libx264) or PNG-sequence.\n"
@@ -6835,7 +6835,7 @@ class U64Streamer(QDialog):
         # Cinema mode toggle - row 1, right side
         self.btn_cinema = QPushButton("Cinema")
         self.btn_cinema.setStyleSheet(button_qss("blue"))
-        self.btn_cinema.setFixedWidth(78)
+        self.btn_cinema.setMinimumWidth(scaled_px(78))
         self.btn_cinema.setCheckable(True)
         self.btn_cinema.setToolTip(
             "Hide all controls and show only the video.\n"
@@ -6846,7 +6846,7 @@ class U64Streamer(QDialog):
         # Always-on-top
         self.btn_ontop = QPushButton("On top")
         self.btn_ontop.setStyleSheet(button_qss("blue"))
-        self.btn_ontop.setFixedWidth(70)
+        self.btn_ontop.setMinimumWidth(scaled_px(70))
         self.btn_ontop.setCheckable(True)
         self.btn_ontop.setChecked(self._always_on_top)
         self.btn_ontop.setToolTip(
@@ -6856,7 +6856,7 @@ class U64Streamer(QDialog):
 
         btn_close = QPushButton("Close")
         btn_close.setStyleSheet(button_qss("red"))
-        btn_close.setFixedWidth(70)
+        btn_close.setMinimumWidth(scaled_px(70))
         btn_close.clicked.connect(self.close)
         bar.addWidget(btn_close)
 
@@ -6875,7 +6875,7 @@ class U64Streamer(QDialog):
         # selector (A/B) and mode (RO/RW/Unlinked).
         self.btn_mount = QPushButton("Mount...")
         self.btn_mount.setStyleSheet(button_qss("blue"))
-        self.btn_mount.setFixedWidth(80)
+        self.btn_mount.setMinimumWidth(scaled_px(80))
         self.btn_mount.setToolTip(
             "Mount a D64/D71/D81/G64/G71/G81 image on Drive A or B\n"
             "with choice of mode (Read-only / Read-write / Unlinked).")
@@ -6885,7 +6885,7 @@ class U64Streamer(QDialog):
         # Drive status - live read of /v1/drives, auto-refresh.
         self.btn_drives = QPushButton("Drives")
         self.btn_drives.setStyleSheet(button_qss("blue"))
-        self.btn_drives.setFixedWidth(64)
+        self.btn_drives.setMinimumWidth(scaled_px(64))
         self.btn_drives.setToolTip(
             "Show live drive status (mounted images, modes, bus IDs).\n"
             "Auto-refreshes every 2 seconds while open.")
@@ -6895,7 +6895,7 @@ class U64Streamer(QDialog):
         # Config editor - full read/write UI for U64 firmware settings
         self.btn_cfg_edit = QPushButton("Cfg Edit")
         self.btn_cfg_edit.setStyleSheet(button_qss("blue"))
-        self.btn_cfg_edit.setFixedWidth(74)
+        self.btn_cfg_edit.setMinimumWidth(scaled_px(74))
         self.btn_cfg_edit.setToolTip(
             "Edit Ultimate firmware configuration: drives, SID,\n"
             "audio, network, cartridge, modem, etc. Save to flash\n"
@@ -6906,7 +6906,7 @@ class U64Streamer(QDialog):
         # Backup/Restore - JSON snapshot of all U64 configs
         self.btn_backup = QPushButton("Backup")
         self.btn_backup.setStyleSheet(button_qss("blue"))
-        self.btn_backup.setFixedWidth(72)
+        self.btn_backup.setMinimumWidth(scaled_px(72))
         self.btn_backup.setToolTip(
             "Backup the U64's full configuration to a JSON file\n"
             "for later restoration on this or another device.")
@@ -6917,7 +6917,7 @@ class U64Streamer(QDialog):
         # syntax highlighting, validate, and Send & Run via REST API
         self.btn_basic = QPushButton("BASIC")
         self.btn_basic.setStyleSheet(button_qss("green"))
-        self.btn_basic.setFixedWidth(64)
+        self.btn_basic.setMinimumWidth(scaled_px(64))
         self.btn_basic.setToolTip(
             "Open a BASIC v2 editor with syntax highlighting and\n"
             "petcat-style PETSCII control codes ({CLR}, {RVS_ON}, ...)\n"
@@ -6930,7 +6930,7 @@ class U64Streamer(QDialog):
         # files directly on the device.
         self.btn_asm64 = QPushButton("Asm64")
         self.btn_asm64.setStyleSheet(button_qss("green"))
-        self.btn_asm64.setFixedWidth(64)
+        self.btn_asm64.setMinimumWidth(scaled_px(64))
         self.btn_asm64.setToolTip(
             "Open the Assembly64 browser - search CSDB, HVSC, c64.org,\n"
             "OneLoad64, Gamebase64 and friends via Fredrik Aaberg's\n"
@@ -6966,9 +6966,9 @@ class U64Streamer(QDialog):
         self.ed_type.setPlaceholderText(
             "type a line, press Enter to send (RETURN included)")
         self.ed_type.setToolTip(
-            "ASCII gets converted to PETSCII and pushed into the "
+            "<qt>ASCII gets converted to PETSCII and pushed into the "
             "C64's keyboard buffer at $0277. Works with BASIC and "
-            "anything else that reads the standard KERNAL input.")
+            "anything else that reads the standard KERNAL input.</qt>")
         self.ed_type.returnPressed.connect(self._on_type_send)
         # Install an event filter so that when 'Capture keys' is
         # on, every keystroke into the Type-line gets forwarded
@@ -6981,16 +6981,16 @@ class U64Streamer(QDialog):
         kbd_row.addWidget(self.ed_type, 1)
         self.btn_send = QPushButton("Send")
         self.btn_send.setStyleSheet(button_qss("blue"))
-        self.btn_send.setFixedWidth(60)
+        self.btn_send.setMinimumWidth(scaled_px(60))
         self.btn_send.setToolTip("Send the typed text + RETURN to the C64")
         self.btn_send.clicked.connect(self._on_type_send)
         kbd_row.addWidget(self.btn_send)
         self.chk_capture = QCheckBox("Capture keys")
         self.chk_capture.setToolTip(
-            "When checked: every key pressed while this window has "
+            "<qt>When checked: every key pressed while this window has "
             "focus gets forwarded to the C64. Modifier keys "
             "(Shift, Ctrl) and most function keys are mapped; others "
-            "are sent as raw PETSCII or dropped.")
+            "are sent as raw PETSCII or dropped.</qt>")
         # When the user unchecks Capture, tear down the persistent
         # keyboard worker so we don't leave its TCP connection to
         # the U64 hanging open for the rest of the session. The
@@ -7020,7 +7020,7 @@ class U64Streamer(QDialog):
         for label, pet in fkey_specs:
             btn = QPushButton(label)
             btn.setStyleSheet(button_qss("blue"))
-            btn.setFixedWidth(38)
+            btn.setMinimumWidth(scaled_px(38))
             btn.setToolTip(f"Send {label} (PETSCII {pet:#04x}) "
                               f"to the C64 keyboard buffer")
             # Default arg trick to capture `pet` per-iteration -
@@ -7044,7 +7044,7 @@ class U64Streamer(QDialog):
         ]:
             btn = QPushButton(label)
             btn.setStyleSheet(button_qss("blue"))
-            btn.setFixedWidth(34)
+            btn.setMinimumWidth(scaled_px(34))
             btn.setToolTip(tip)
             btn.clicked.connect(lambda _checked=False, p=pet:
                                   self._send_petscii_byte(p))
@@ -7056,7 +7056,7 @@ class U64Streamer(QDialog):
         # werden die nicht den KERNAL-Buffer lesen.
         self.btn_space = QPushButton("SPC")
         self.btn_space.setStyleSheet(button_qss("blue"))
-        self.btn_space.setFixedWidth(34)
+        self.btn_space.setMinimumWidth(scaled_px(34))
         self.btn_space.setToolTip(
             "SPACE - tries keybuf + matrix-code + joystick-fire so "
             "intros / demos that don't use the KERNAL buffer can "
@@ -7069,7 +7069,7 @@ class U64Streamer(QDialog):
         fkey_row.addSpacing(8)
         self.btn_mem = QPushButton("Memory")
         self.btn_mem.setStyleSheet(button_qss("orange"))
-        self.btn_mem.setFixedWidth(70)
+        self.btn_mem.setMinimumWidth(scaled_px(70))
         self.btn_mem.setToolTip(
             "Grab a memory range from the U64 (DMA read) and show "
             "it as 6502 disassembly or hex dump")
@@ -7265,7 +7265,7 @@ class U64Streamer(QDialog):
             # underneath but the button stays clickable.
             self.btn_cinema.setText("Show controls (Esc)")
             self.btn_cinema.setParent(self)
-            self.btn_cinema.setFixedWidth(160)
+            self.btn_cinema.setMinimumWidth(scaled_px(160))
             # Slightly translucent so the picture peeks through.
             # rgba(48, 80, 168, 0.85) is the blue button at 85%.
             self.btn_cinema.setStyleSheet(
@@ -7290,7 +7290,7 @@ class U64Streamer(QDialog):
             # Re-parent the button back to the toolbar with normal
             # (non-translucent) styling.
             self.btn_cinema.setText("Cinema")
-            self.btn_cinema.setFixedWidth(78)
+            self.btn_cinema.setMinimumWidth(scaled_px(78))
             self.btn_cinema.setStyleSheet(button_qss("blue"))
             if len(self._chrome_widgets) >= 2:
                 bar_w = self._chrome_widgets[1]

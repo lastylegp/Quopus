@@ -1,4 +1,4 @@
-# date_time: 2026-06-10 21:12
+# date_time: 2026-06-20 12:28
 """Config load/save. Drive column is separate from the action button grid."""
 import json
 import os
@@ -1146,6 +1146,18 @@ def scaled_font_px(base_px, cfg=None):
         if override > 0 and 10 <= base_px <= 12:
             base_px = override
     return max(6, round(base_px * scale))
+
+
+def scaled_px(n, cfg=None):
+    """Scale a fixed pixel dimension (e.g. button widths) by the same
+    UI scale factor used for fonts, so widgets grow with the text and
+    labels don't get clipped at higher scale percentages (125/150/...).
+    Use this wherever a setFixedWidth()/setMinimumWidth() would otherwise
+    hard-code a logical pixel size for text-bearing widgets."""
+    try:
+        return max(1, round(int(n) * current_font_scale(cfg)))
+    except (TypeError, ValueError):
+        return n
 
 
 def refresh_all_widgets_font(app=None):
