@@ -1,4 +1,4 @@
-# date_time: 2026-06-20 12:51
+# date_time: 2026-06-20 16:24
 """Ultimate 64 VIC video streamer for Quopus.
 
 Python port of DusteDdk/u64view (https://github.com/DusteDdk/u64view).
@@ -6683,7 +6683,7 @@ class U64Streamer(QDialog):
         bar.setSpacing(2)
         bar.setContentsMargins(0, 0, 0, 0)
 
-        self.btn_config = QPushButton("Config...")
+        self.btn_config = QPushButton("Config")
         self.btn_config.setStyleSheet(button_qss("blue"))
         self.btn_config.setMinimumWidth(scaled_px(90))
         self.btn_config.setToolTip(
@@ -6873,7 +6873,7 @@ class U64Streamer(QDialog):
 
         # Mount disk - opens U64MountDialog with file picker, drive
         # selector (A/B) and mode (RO/RW/Unlinked).
-        self.btn_mount = QPushButton("Mount...")
+        self.btn_mount = QPushButton("Mount")
         self.btn_mount.setStyleSheet(button_qss("blue"))
         self.btn_mount.setMinimumWidth(scaled_px(80))
         self.btn_mount.setToolTip(
