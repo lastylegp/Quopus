@@ -1,4 +1,4 @@
-# date_time: 2026-06-10 21:44
+# date_time: 2026-06-20 23:06
 """Telegram client for Quopus Commander (MTProto / Telethon).
 
 A full Telegram *user* client embedded as a PyQt6 dialog: it logs
@@ -149,6 +149,22 @@ class TgDialog:
     unread: int
 
 
+def _img_mime(data: bytes) -> str:
+    """Detect an image's format from its magic bytes so inline previews
+    get the right data-URI mime (Telegram thumbnails are usually JPEG,
+    but stickers/PNGs are not - mislabelling them as jpeg makes Qt show
+    nothing)."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:4] == b"GIF8":
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
+
 @dataclass
 class TgMessage:
     id: int
@@ -158,9 +174,10 @@ class TgMessage:
     timestamp: float
     out: bool                  # True if we sent it
     media: bool                # has a downloadable attachment
-    media_kind: str = ""       # 'photo' | 'document' | 'video' | ''
+    media_kind: str = ""       # 'photo'|'gif'|'video'|'document'|''
     filename: str = ""
     thumb_b64: str = ""        # tiny inline preview (data URI payload)
+    thumb_mime: str = "image/jpeg"   # actual format of thumb_b64
 
 
 # ------------------------------------------------------------------
@@ -188,6 +205,7 @@ class _TgWorker(QObject):
     sig_sent = pyqtSignal('qlonglong')        # chat_id (message sent ok)
     sig_download_done = pyqtSignal(str, bool)  # filepath, open_after
     sig_upload_done = pyqtSignal('qlonglong', str)  # chat_id, filename
+    sig_saved_media = pyqtSignal(str, list)   # kind ('gif'/'sticker'), items
 
     def __init__(self, api_id: int, api_hash: str, phone: str):
         super().__init__()
@@ -203,6 +221,9 @@ class _TgWorker(QObject):
         # sometimes came back empty. We keep the real entities here
         # and hand them to iter_messages.
         self._entities: dict = {}
+        # Cache of fetched saved-gif / faved-sticker Document objects,
+        # keyed by kind, so a picker click can re-send the chosen one.
+        self._saved_docs: dict = {"gif": [], "sticker": []}
         # (chat_id, msg_id) pairs already dispatched, so the NewMessage
         # handler and the raw fallback don't double-emit the same one.
         self._seen_msg_ids: set = set()
@@ -463,25 +484,33 @@ class _TgWorker(QObject):
             pass
         kind, fname = "", ""
         thumb_b64 = ""
+        thumb_mime = "image/jpeg"
         if m.media is not None:
             if m.photo is not None:
                 kind = "photo"
+            elif getattr(m, "gif", None) is not None:
+                # Telegram stores GIFs as MP4 documents flagged
+                # 'animated'; Telethon exposes them via m.gif. Check
+                # this BEFORE m.video, which would also match the MP4.
+                kind = "gif"
             elif m.video is not None:
                 kind = "video"
             elif m.document is not None:
                 kind = "document"
-                try:
-                    fname = m.file.name or ""
-                except Exception:
-                    fname = ""
+            # Original filename (documents have one; photos/videos/gifs
+            # usually don't - we synthesize one when saving).
+            try:
+                fname = (m.file.name or "") if m.file else ""
+            except Exception:
+                fname = ""
             # Grab an inline preview for things that have one
-            # (photos, videos, and documents with embedded thumbs).
+            # (photos, videos, gifs, and documents with embedded thumbs).
             # We download a thumbnail, not the full media, so the
             # chat stays responsive - but the *largest* available
             # thumbnail (thumb=-1), since the smallest is far too
             # low-res to display at ~400px. Encoded as base64 for
             # embedding straight into the message HTML.
-            if want_thumb and kind in ("photo", "video", "document"):
+            if want_thumb and kind in ("photo", "video", "gif", "document"):
                 try:
                     import io as _io
                     import base64 as _b64
@@ -497,6 +526,7 @@ class _TgWorker(QObject):
                             m, file=buf, thumb=0)
                     data = buf.getvalue()
                     if data:
+                        thumb_mime = _img_mime(data)
                         thumb_b64 = _b64.b64encode(data)\
                             .decode("ascii")
                 except Exception:
@@ -510,7 +540,8 @@ class _TgWorker(QObject):
             id=m.id, chat_id=chat_id, sender=sender,
             text=m.message or "", timestamp=ts,
             out=bool(m.out), media=(m.media is not None),
-            media_kind=kind, filename=fname, thumb_b64=thumb_b64)
+            media_kind=kind, filename=fname, thumb_b64=thumb_b64,
+            thumb_mime=thumb_mime)
 
     async def _on_raw_update(self, update):
         """Diagnostic + fallback. Logs every raw update. If it's a
@@ -603,12 +634,71 @@ class _TgWorker(QObject):
         except Exception as e:
             self.sig_error.emit("Upload failed: %s" % e)
 
+    # -- saved stickers / gifs -----------------------------------
+    def fetch_saved_media(self, kind: str):
+        self._submit(self._fetch_saved_media(kind))
+
+    async def _fetch_saved_media(self, kind: str):
+        try:
+            from telethon.tl import functions
+            import base64 as _b64
+            import io as _io
+            docs = []
+            if kind == "gif":
+                res = await self._client(
+                    functions.messages.GetSavedGifsRequest(hash=0))
+                docs = list(getattr(res, "gifs", []) or [])
+            else:  # sticker: favourites first, then recents
+                try:
+                    res = await self._client(
+                        functions.messages.GetFavedStickersRequest(hash=0))
+                    docs = list(getattr(res, "stickers", []) or [])
+                except Exception:
+                    docs = []
+                if not docs:
+                    res = await self._client(
+                        functions.messages.GetRecentStickersRequest(
+                            attached=False, hash=0))
+                    docs = list(getattr(res, "stickers", []) or [])
+            self._saved_docs[kind] = docs
+            items = []
+            for i, doc in enumerate(docs[:80]):
+                b64, mime = "", "image/png"
+                try:
+                    buf = _io.BytesIO()
+                    await self._client.download_media(
+                        doc, file=buf, thumb=-1)
+                    data = buf.getvalue()
+                    if data:
+                        mime = _img_mime(data)
+                        b64 = _b64.b64encode(data).decode("ascii")
+                except Exception:
+                    b64 = ""
+                items.append({"idx": i, "mime": mime, "b64": b64})
+            self.sig_saved_media.emit(kind, items)
+        except Exception as e:
+            self.sig_error.emit("Could not load saved %ss: %s" % (kind, e))
+
+    def send_saved_media(self, chat_id: int, kind: str, idx: int):
+        self._submit(self._send_saved_media(chat_id, kind, idx))
+
+    async def _send_saved_media(self, chat_id: int, kind: str, idx: int):
+        try:
+            docs = self._saved_docs.get(kind) or []
+            if idx < 0 or idx >= len(docs):
+                self.sig_error.emit("That item is no longer available.")
+                return
+            target = self._entities.get(chat_id, chat_id)
+            await self._client.send_file(target, docs[idx])
+            self.sig_sent.emit(chat_id)
+        except Exception as e:
+            self.sig_error.emit("Send failed: %s" % e)
+
     def download_message_media(self, chat_id: int, message_id: int,
                                dest_dir: str,
                                open_after: bool = False):
         self._submit(self._download(
             chat_id, message_id, dest_dir, open_after))
-
     async def _download(self, chat_id: int, message_id: int,
                         dest_dir: str, open_after: bool = False):
         try:
@@ -628,6 +718,58 @@ class _TgWorker(QObject):
                 self.sig_error.emit("Download produced no file.")
         except Exception as e:
             self.sig_error.emit("Download failed: %s" % e)
+
+    # -- download + convert (e.g. WebM sticker -> GIF/MP4) --------
+    def save_media_converted(self, chat_id: int, message_id: int,
+                             dest_path: str, fmt: str):
+        self._submit(self._save_media_converted(
+            chat_id, message_id, dest_path, fmt))
+
+    async def _save_media_converted(self, chat_id: int, message_id: int,
+                                    dest_path: str, fmt: str):
+        import tempfile
+        import shutil
+        try:
+            target = self._entities.get(chat_id, chat_id)
+            msg = await self._client.get_messages(target, ids=message_id)
+            if msg is None or msg.media is None:
+                self.sig_error.emit("No media on that message.")
+                return
+            tmpdir = tempfile.mkdtemp(prefix="quopus_tgc_")
+            src = await self._client.download_media(msg, file=tmpdir)
+            if not src:
+                self.sig_error.emit("Download produced no file.")
+                return
+            if fmt == "gif":
+                # GIF can't inter-frame compress, so keep it sane:
+                # never upscale (cap 320px), 15 fps, diff palette.
+                vf = ("fps=15,scale='min(320,iw)':-1:flags=lanczos,"
+                      "split[s0][s1];[s0]palettegen=stats_mode=diff[p];"
+                      "[s1][p]paletteuse=dither=bayer:bayer_scale=3")
+                cmd = ["ffmpeg", "-y", "-i", src, "-vf", vf, dest_path]
+            else:  # mp4 - WhatsApp-friendly H.264, no upscaling
+                cmd = ["ffmpeg", "-y", "-i", src,
+                       "-pix_fmt", "yuv420p", "-movflags", "faststart",
+                       "-vf", "scale='min(512,iw)':-2", dest_path]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE)
+                _, err = await proc.communicate()
+            except FileNotFoundError:
+                self.sig_error.emit(
+                    "ffmpeg nicht gefunden (PATH) - bitte installieren, "
+                    "um Sticker/Videos umzuwandeln.")
+                return
+            finally:
+                shutil.rmtree(tmpdir, ignore_errors=True)
+            if proc.returncode != 0:
+                tail = (err or b"").decode("utf-8", "ignore")[-200:]
+                self.sig_error.emit("ffmpeg-Fehler: %s" % tail)
+                return
+            self.sig_download_done.emit(str(dest_path), False)
+        except Exception as e:
+            self.sig_error.emit("Convert failed: %s" % e)
 
 
 # ------------------------------------------------------------------
@@ -662,6 +804,77 @@ def _is_light(hex_color: str) -> bool:
         return (0.299 * r + 0.587 * g + 0.114 * b) > 140
     except Exception:
         return False
+
+
+class _SavedMediaPicker(QDialog):
+    """A small grid picker for the user's saved GIFs / favourite
+    stickers. Thumbnails arrive asynchronously via populate(); clicking
+    one calls on_pick(idx) and closes."""
+
+    def __init__(self, parent, kind, on_pick):
+        super().__init__(parent)
+        self.kind = kind
+        self._on_pick = on_pick
+        self._cols = 4
+        self.setWindowTitle(
+            "Sticker senden" if kind == "sticker" else "GIF senden")
+        self.resize(440, 500)
+        from PyQt6.QtWidgets import QScrollArea, QGridLayout
+        v = QVBoxLayout(self)
+        self.lbl = QLabel("Lade...")
+        v.addWidget(self.lbl)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._host = QWidget()
+        self._grid = QGridLayout(self._host)
+        self._grid.setSpacing(4)
+        self._scroll.setWidget(self._host)
+        v.addWidget(self._scroll, 1)
+
+    def populate(self, items):
+        from PyQt6.QtWidgets import QToolButton
+        from PyQt6.QtGui import QIcon, QPixmap
+        from PyQt6.QtCore import QSize
+        import base64 as _b64
+        while self._grid.count():
+            it = self._grid.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        shown = 0
+        for it in items:
+            b64 = it.get("b64") or ""
+            if not b64:
+                continue
+            pm = QPixmap()
+            try:
+                pm.loadFromData(_b64.b64decode(b64))
+            except Exception:
+                continue
+            if pm.isNull():
+                continue
+            btn = QToolButton()
+            btn.setIcon(QIcon(pm))
+            btn.setIconSize(QSize(88, 88))
+            btn.setAutoRaise(True)
+            idx = it["idx"]
+            btn.clicked.connect(
+                lambda _c=False, i=idx: self._pick(i))
+            r, c = divmod(shown, self._cols)
+            self._grid.addWidget(btn, r, c)
+            shown += 1
+        if shown:
+            noun = "Sticker" if self.kind == "sticker" else "GIFs"
+            self.lbl.setText(f"{shown} {noun} - zum Senden anklicken")
+        else:
+            self.lbl.setText(
+                "Nichts gefunden (keine Vorschau verfuegbar).")
+
+    def _pick(self, idx):
+        try:
+            self._on_pick(idx)
+        finally:
+            self.accept()
 
 
 class TelegramDialog(QDialog):
@@ -854,6 +1067,7 @@ class TelegramDialog(QDialog):
             "timestamp": m.timestamp, "out": m.out,
             "media": m.media, "media_kind": m.media_kind,
             "filename": m.filename, "thumb_b64": m.thumb_b64,
+            "thumb_mime": m.thumb_mime,
         }
 
     def _msg_from_dict(self, d: dict) -> Optional[TgMessage]:
@@ -867,7 +1081,8 @@ class TelegramDialog(QDialog):
                 media=bool(d.get("media", False)),
                 media_kind=d.get("media_kind", ""),
                 filename=d.get("filename", ""),
-                thumb_b64=d.get("thumb_b64", ""))
+                thumb_b64=d.get("thumb_b64", ""),
+                thumb_mime=d.get("thumb_mime", "image/jpeg"))
         except Exception:
             return None
 
@@ -1158,6 +1373,20 @@ class TelegramDialog(QDialog):
             "Send the files tagged in the active Quopus lister")
         self.btn_tagged.clicked.connect(self._send_tagged)
         compose.addWidget(self.btn_tagged)
+        self.btn_sticker = QPushButton("Sticker")
+        self.btn_sticker.setFont(_mono_font(11))
+        self.btn_sticker.setToolTip(
+            "Aus deinen Favoriten-/zuletzt-Stickern auswaehlen und senden")
+        self.btn_sticker.clicked.connect(
+            lambda: self._open_saved_picker("sticker"))
+        compose.addWidget(self.btn_sticker)
+        self.btn_gif = QPushButton("GIF")
+        self.btn_gif.setFont(_mono_font(11))
+        self.btn_gif.setToolTip(
+            "Aus deinen gespeicherten GIFs auswaehlen und senden")
+        self.btn_gif.clicked.connect(
+            lambda: self._open_saved_picker("gif"))
+        compose.addWidget(self.btn_gif)
         rv.addLayout(compose)
         split.addWidget(right)
 
@@ -1169,7 +1398,7 @@ class TelegramDialog(QDialog):
 
     def _set_compose_enabled(self, on: bool):
         for w in (self.edit_msg, self.btn_send, self.btn_file,
-                  self.btn_tagged):
+                  self.btn_tagged, self.btn_sticker, self.btn_gif):
             w.setEnabled(on)
 
     # -- connection / login --------------------------------------
@@ -1258,6 +1487,7 @@ class TelegramDialog(QDialog):
         w.sig_sent.connect(self._on_sent)
         w.sig_download_done.connect(self._on_download_done)
         w.sig_upload_done.connect(self._on_upload_done)
+        w.sig_saved_media.connect(self._on_saved_media)
 
     def _set_status(self, text: str):
         self.lbl_status.setText(text)
@@ -1610,26 +1840,76 @@ class TelegramDialog(QDialog):
             open_after=True)
 
     def _on_msgs_context_menu(self, pos):
-        """Right click: if it's on an attachment link, offer Save
-        (download into the lister folder). Otherwise no menu."""
+        """Right click on an attachment link: offer Save (into the
+        lister folder, original name) or Save as... (pick folder +
+        name). No menu when not on an attachment link."""
         msg_id = self._anchor_msg_id_at(pos)
         if msg_id is None:
             return
+        if self._current_chat is None or self._worker is None:
+            return
         from PyQt6.QtWidgets import QMenu
+        import os as _os
         menu = QMenu(self.view_msgs)
-        act_save = menu.addAction(
-            "Save attachment to lister folder")
+        act_save = menu.addAction("Save attachment to lister folder")
+        act_saveas = menu.addAction("Save attachment as...")
+        menu.addSeparator()
+        act_gif = menu.addAction("Save as animated GIF (convert)")
+        act_mp4 = menu.addAction("Save as MP4 (convert)")
         chosen = menu.exec(
             self.view_msgs.viewport().mapToGlobal(pos))
         if chosen is act_save:
-            if self._current_chat is None or self._worker is None:
-                return
             dest = self._download_dir
-            self._set_status(
-                "Saving attachment to %s ..." % dest)
+            self._set_status("Saving attachment to %s ..." % dest)
             self._worker.download_message_media(
-                self._current_chat, msg_id, dest,
-                open_after=False)
+                self._current_chat, msg_id, dest, open_after=False)
+        elif chosen is act_saveas:
+            suggested = self._suggest_filename(msg_id)
+            start = self._download_dir or self._guess_download_dir()
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save attachment as",
+                _os.path.join(start, suggested),
+                "All files (*)")
+            if not path:
+                return
+            self._set_status("Saving attachment to %s ..." % path)
+            self._worker.download_message_media(
+                self._current_chat, msg_id, path, open_after=False)
+        elif chosen in (act_gif, act_mp4):
+            fmt = "gif" if chosen is act_gif else "mp4"
+            base = _os.path.splitext(self._suggest_filename(msg_id))[0]
+            suggested = base + "." + fmt
+            start = self._download_dir or self._guess_download_dir()
+            flt = "GIF (*.gif)" if fmt == "gif" else "MP4 (*.mp4)"
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save as " + fmt.upper(),
+                _os.path.join(start, suggested), flt)
+            if not path:
+                return
+            if not path.lower().endswith("." + fmt):
+                path += "." + fmt
+            self._set_status(
+                "Konvertiere zu %s (ffmpeg)..." % fmt.upper())
+            self._worker.save_media_converted(
+                self._current_chat, msg_id, path, fmt)
+
+    def _msg_by_id(self, msg_id):
+        for m in (self._msg_cache.get(self._current_chat) or []):
+            if m.id == msg_id:
+                return m
+        return None
+
+    def _suggest_filename(self, msg_id) -> str:
+        """A sensible 'save as' filename for an attachment, with the
+        right extension for the media kind (zip/png keep their original
+        name; photos/videos/gifs get a synthesized name+ext)."""
+        m = self._msg_by_id(msg_id)
+        if m is not None and m.filename:
+            return m.filename
+        kind = (m.media_kind if m is not None else "") or "media"
+        ext = {"photo": ".jpg", "video": ".mp4",
+               "gif": ".mp4", "document": ".bin"}.get(kind, ".bin")
+        return "%s_%s%s" % (kind, msg_id, ext)
 
     def _anchor_msg_id_at(self, pos):
         """Return the tgdl message id at a viewport position, or
@@ -1675,7 +1955,7 @@ class TelegramDialog(QDialog):
             label_html = _html.escape(label)
             if m.thumb_b64:
                 media_part += (
-                    f'<br><img src="data:image/jpeg;base64,'
+                    f'<br><img src="data:{m.thumb_mime};base64,'
                     f'{m.thumb_b64}" '
                     f'style="max-width:400px;max-height:400px;"><br>')
             else:
@@ -1899,6 +2179,28 @@ class TelegramDialog(QDialog):
         for p in files:
             self._worker.send_file(self._current_chat, str(p))
         self._set_status("Uploading %d tagged file(s)..." % len(files))
+
+    # -- saved stickers / gifs ------------------------------------
+    def _open_saved_picker(self, kind: str):
+        if self._current_chat is None or self._worker is None:
+            return
+        self._saved_picker = _SavedMediaPicker(
+            self, kind, lambda idx: self._send_saved(kind, idx))
+        self._set_status(
+            "Lade %s..." % ("Sticker" if kind == "sticker" else "GIFs"))
+        self._worker.fetch_saved_media(kind)
+        self._saved_picker.show()
+
+    def _on_saved_media(self, kind: str, items: list):
+        p = getattr(self, "_saved_picker", None)
+        if p is not None and p.isVisible() and p.kind == kind:
+            p.populate(items)
+        self._set_status("")
+
+    def _send_saved(self, kind: str, idx: int):
+        if self._current_chat is not None and self._worker is not None:
+            self._set_status("Sende...")
+            self._worker.send_saved_media(self._current_chat, kind, idx)
 
     def _tagged_files(self) -> list:
         """Collect tagged file paths from the lister, falling back
