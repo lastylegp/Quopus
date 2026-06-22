@@ -1,4 +1,4 @@
-# date_time: 2026-06-20 16:24
+# date_time: 2026-06-22 19:25
 """Ultimate 64 VIC video streamer for Quopus.
 
 Python port of DusteDdk/u64view (https://github.com/DusteDdk/u64view).
@@ -30,7 +30,7 @@ from pathlib import Path
 
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QTimer, QByteArray, QIODevice, QBuffer,
-    QRegularExpression,
+    QRegularExpression, QRect, QSize, QPoint,
 )
 from PyQt6.QtGui import (
     QImage, QPixmap, QPainter, QColor, QFontDatabase,
@@ -42,7 +42,7 @@ from PyQt6.QtWidgets import (
     QPlainTextEdit, QFileDialog, QRadioButton, QButtonGroup,
     QTableWidget, QTableWidgetItem, QHeaderView, QStyledItemDelegate,
     QLineEdit, QAbstractItemView, QStackedWidget, QCheckBox, QMenu,
-    QWidget, QApplication,
+    QWidget, QApplication, QLayout,
 )
 
 # Optional audio support. Some PyQt6 builds don't have multimedia
@@ -6558,6 +6558,116 @@ class U64BackupDialog(QDialog):
 
 
 # ---------------------------------------------------------------------
+# Flow layout: like QHBoxLayout but wraps to the next line when the
+# window gets narrower than the row's content. Used for the toolbars so
+# the streamer window can be resized small in width without the buttons
+# pinning a huge minimum width (which made the window only resizable in
+# height). minimumSize() is the widest single item, NOT the row sum.
+# ---------------------------------------------------------------------
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=0, hspacing=4, vspacing=2):
+        super().__init__(parent)
+        self._items = []
+        self._hspace = hspacing
+        self._vspace = vspacing
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def addStretch(self, stretch=0):
+        # No stretch concept in a wrapping flow layout - ignore so the
+        # existing toolbar build code (which calls addStretch) works.
+        return
+
+    def addSpacing(self, size):
+        from PyQt6.QtWidgets import QSpacerItem
+        self.addItem(QSpacerItem(
+            int(size), 0, QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Minimum))
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, i):
+        if 0 <= i < len(self._items):
+            return self._items[i]
+        return None
+
+    def takeAt(self, i):
+        if 0 <= i < len(self._items):
+            return self._items.pop(i)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        m = self.contentsMargins()
+        size += QSize(m.left() + m.right(), m.top() + m.bottom())
+        return size
+
+    def _do_layout(self, rect, testonly):
+        m = self.contentsMargins()
+        x = rect.x() + m.left()
+        y = rect.y() + m.top()
+        right = rect.right() - m.right()
+        line_height = 0
+        for item in self._items:
+            sz = item.sizeHint()
+            w, h = sz.width(), sz.height()
+            next_x = x + w + self._hspace
+            if next_x - self._hspace > right and line_height > 0:
+                x = rect.x() + m.left()
+                y = y + line_height + self._vspace
+                next_x = x + w + self._hspace
+                line_height = 0
+            if not testonly:
+                item.setGeometry(QRect(QPoint(x, y), QSize(w, h)))
+            x = next_x
+            line_height = max(line_height, h)
+        return y + line_height - rect.y() + m.bottom()
+
+
+# ---------------------------------------------------------------------
+# Aspect-ratio frame: a QFrame that, in a vertical layout, reports a
+# height of width*rh/rw. The video label inside fills it exactly, so
+# the C64 picture is never letterboxed with black bars - the frame is
+# always the picture's shape.
+# ---------------------------------------------------------------------
+class _AspectFrame(QFrame):
+    def __init__(self, rw, rh, parent=None):
+        super().__init__(parent)
+        self._rw, self._rh = rw, rh
+        sp = QSizePolicy(QSizePolicy.Policy.Expanding,
+                         QSizePolicy.Policy.Preferred)
+        sp.setHeightForWidth(True)
+        self.setSizePolicy(sp)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, w):
+        return round(w * self._rh / self._rw)
+
+
+# ---------------------------------------------------------------------
 # Main streamer dialog
 # ---------------------------------------------------------------------
 
@@ -7121,10 +7231,6 @@ class U64Streamer(QDialog):
         self.video_label.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Expanding)
-        # Don't let the label collapse below the native frame -
-        # otherwise dragging the window very small would shrink the
-        # picture into invisibility and the layout would jiggle as
-        # the toolbar tries to fit. 1:1 is the floor.
         self.video_label.setMinimumSize(FRAME_W, FRAME_H)
         flayout.addWidget(self.video_label)
         layout.addWidget(frame, 1)
