@@ -1,4 +1,4 @@
-# date_time: 2026-06-15 18:21
+# date_time: 2026-06-23 13:32
 """
 FileLister widget - pure file list, no drive buttons inside.
 
@@ -3216,6 +3216,8 @@ class FileLister(QWidget):
             edit_menu.setStyleSheet(menu.styleSheet())
             edit_menu.addAction("Rename", self._rename_selected)
             edit_menu.addAction("Delete", self._delete_selected)
+            edit_menu.addAction("Change date / attributes...",
+                                self._change_attrs_selected)
             edit_menu.addSeparator()
             edit_menu.addAction("Tag / Untag", lambda: (
                 self.model.toggle_tag(idx.row())
@@ -3774,7 +3776,237 @@ class FileLister(QWidget):
             except Exception as ex:
                 QMessageBox.critical(self, "Quopus", f"Rename failed: {ex}")
 
+    def _change_attrs_selected(self):
+        """Change file date(s) and protection bits / attributes for the
+        selected (or tagged) local files. With multiple files selected
+        they are stepped through one after another, each pre-filled with
+        its own current values."""
+        from pathlib import Path
+        if self.fs.kind == 'remote':
+            QMessageBox.information(
+                self, "Quopus",
+                "Changing date / attributes only works for local files.")
+            return
+        paths = [Path(p) for p in self.selected_or_tagged()]
+        paths = [p for p in paths if p.exists()]
+        if not paths:
+            return
+        is_win = (os.name == 'nt')
+
+        errors = []
+        apply_all = None   # once "Apply to all remaining" is chosen
+        total = len(paths)
+        for i, p in enumerate(paths):
+            if apply_all is not None:
+                settings = apply_all
+            else:
+                action, settings = self._ask_file_attrs(p, i, total, is_win)
+                if action == "cancel":
+                    break
+                if action == "skip":
+                    continue
+                if action == "apply_all":
+                    apply_all = settings
+            try:
+                self._apply_file_attrs(p, settings, is_win)
+            except Exception as ex:
+                errors.append(f"{p.name}: {ex}")
+
+        self.refresh()
+        if errors:
+            QMessageBox.warning(
+                self, "Quopus",
+                "Some changes failed:\n" + "\n".join(errors[:10]))
+
+    def _ask_file_attrs(self, p, idx, total, is_win):
+        """Dialog for one file. Returns (action, settings) where action
+        is 'apply' | 'apply_all' | 'skip' | 'cancel'."""
+        import ctypes
+        from PyQt6.QtCore import QDateTime, Qt as _Qt
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QGridLayout,
+            QCheckBox, QDateTimeEdit, QLabel, QPushButton, QLineEdit)
+
+        st0 = p.stat()
+        mt0 = QDateTime.fromSecsSinceEpoch(int(st0.st_mtime))
+        at0 = QDateTime.fromSecsSinceEpoch(int(st0.st_atime))
+
+        dlg = QDialog(self)
+        if total > 1:
+            dlg.setWindowTitle(
+                f"Change date / attributes  ({idx + 1}/{total})")
+        else:
+            dlg.setWindowTitle("Change date / attributes")
+        dlg.setStyleSheet(
+            f"QDialog {{ background-color: {C.WB_GREY}; color: {C.BLACK}; }}"
+            f"QGroupBox {{ color: {C.BLACK}; }}")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(f"File: {p.name}"))
+
+        # --- name / extension group ---
+        cur_ext = p.suffix[1:] if p.suffix else ""
+        gb_name = QGroupBox("Name")
+        gn = QHBoxLayout(gb_name)
+        gn.addWidget(QLabel("Extension:"))
+        ed_ext = QLineEdit(cur_ext)
+        ed_ext.setToolTip(
+            "New file extension without the dot. Empty = remove the "
+            "extension. Only renamed if you change this.")
+        gn.addWidget(ed_ext)
+        v.addWidget(gb_name)
+
+        # --- date group ---
+        gb_date = QGroupBox("Date")
+        gd = QGridLayout(gb_date)
+        cb_mtime = QCheckBox("Modified date")
+        ed_mtime = QDateTimeEdit(mt0)
+        ed_mtime.setCalendarPopup(True)
+        ed_mtime.setDisplayFormat("dd.MM.yyyy HH:mm:ss")
+        ed_mtime.setEnabled(False)
+        cb_mtime.toggled.connect(ed_mtime.setEnabled)
+        cb_atime = QCheckBox("Accessed date (last used)")
+        ed_atime = QDateTimeEdit(at0)
+        ed_atime.setCalendarPopup(True)
+        ed_atime.setDisplayFormat("dd.MM.yyyy HH:mm:ss")
+        ed_atime.setEnabled(False)
+        cb_atime.toggled.connect(ed_atime.setEnabled)
+        cb_now = QCheckBox("Set to NOW (modified + last used)")
+        gd.addWidget(cb_mtime, 0, 0)
+        gd.addWidget(ed_mtime, 0, 1)
+        gd.addWidget(cb_atime, 1, 0)
+        gd.addWidget(ed_atime, 1, 1)
+        gd.addWidget(cb_now, 2, 0, 1, 2)
+        v.addWidget(gb_date)
+
+        # --- protection / attribute group ---
+        attr_boxes = {}
+        if is_win:
+            ATTR = [("R", "Read-only", 0x1), ("A", "Archive", 0x20),
+                    ("H", "Hidden", 0x2), ("S", "System", 0x4)]
+            a = ctypes.windll.kernel32.GetFileAttributesW(str(p))
+            a = a if a != -1 else 0
+            gb_attr = QGroupBox("Protection bits / attributes")
+            ga = QGridLayout(gb_attr)
+            for n, (key, label, bit) in enumerate(ATTR):
+                cb = QCheckBox(f"{label} ({key})")
+                cb.setCheckState(_Qt.CheckState.Checked if (a & bit)
+                                 else _Qt.CheckState.Unchecked)
+                ga.addWidget(cb, n // 2, n % 2)
+                attr_boxes[bit] = cb
+            v.addWidget(gb_attr)
+        else:
+            gb_attr = QGroupBox("Protection")
+            ga = QVBoxLayout(gb_attr)
+            cb_ro = QCheckBox("Read-only")
+            cb_ro.setChecked(not os.access(p, os.W_OK))
+            ga.addWidget(cb_ro)
+            attr_boxes['ro'] = cb_ro
+            v.addWidget(gb_attr)
+
+        # --- buttons ---
+        result = {"action": "cancel"}
+
+        def choose(a):
+            result["action"] = a
+            if a == "cancel":
+                dlg.reject()
+            else:
+                dlg.accept()
+
+        row = QHBoxLayout()
+        btn_apply = QPushButton("Apply")
+        btn_apply.clicked.connect(lambda: choose("apply"))
+        row.addWidget(btn_apply)
+        if total > 1:
+            btn_all = QPushButton("Apply to all remaining")
+            btn_all.clicked.connect(lambda: choose("apply_all"))
+            row.addWidget(btn_all)
+            btn_skip = QPushButton("Skip")
+            btn_skip.clicked.connect(lambda: choose("skip"))
+            row.addWidget(btn_skip)
+        btn_cancel = QPushButton("Cancel")
+        btn_cancel.clicked.connect(lambda: choose("cancel"))
+        row.addWidget(btn_cancel)
+        v.addLayout(row)
+
+        dlg.exec()
+
+        import time as _time
+        now_ts = _time.time()
+        set_mtime = cb_mtime.isChecked() or cb_now.isChecked()
+        set_atime = cb_atime.isChecked() or cb_now.isChecked()
+        mt_ts = (now_ts if cb_now.isChecked()
+                 else ed_mtime.dateTime().toSecsSinceEpoch())
+        at_ts = (now_ts if cb_now.isChecked()
+                 else ed_atime.dateTime().toSecsSinceEpoch())
+        attr = {k: cb.checkState().value for k, cb in attr_boxes.items()}
+        new_ext = ed_ext.text().strip().lstrip(".")
+        settings = {"set_mtime": set_mtime, "set_atime": set_atime,
+                    "mt_ts": mt_ts, "at_ts": at_ts, "attr": attr,
+                    "new_ext": new_ext,
+                    "ext_changed": (new_ext != cur_ext)}
+        return result["action"], settings
+
+    def _apply_file_attrs(self, p, settings, is_win):
+        """Apply one settings dict (from _ask_file_attrs) to one path."""
+        import ctypes
+        import stat as _stat
+        set_mtime = settings["set_mtime"]
+        set_atime = settings["set_atime"]
+        mt_ts = settings["mt_ts"]
+        at_ts = settings["at_ts"]
+        attr = settings["attr"]
+
+        # --- extension change (rename) first, then work on the new path ---
+        if settings.get("ext_changed"):
+            new_ext = settings.get("new_ext", "")
+            target = p.with_suffix("." + new_ext) if new_ext \
+                else p.with_suffix("")
+            if target != p:
+                if target.exists():
+                    raise FileExistsError(
+                        f"{target.name} already exists")
+                p.rename(target)
+                p = target
+        # checkState values: 0 = Unchecked, 1 = PartiallyChecked, 2 = Checked
+        target_attr = None
+        if is_win:
+            a0 = ctypes.windll.kernel32.GetFileAttributesW(str(p))
+            a0 = 0 if a0 == -1 else a0
+            target_attr = a0
+            for bit, sv in attr.items():
+                if sv == 1:        # partially checked -> leave as-is
+                    continue
+                if sv == 2:
+                    target_attr |= bit
+                else:
+                    target_attr &= ~bit
+            if (a0 & 0x1) and (set_mtime or set_atime):
+                ctypes.windll.kernel32.SetFileAttributesW(str(p), a0 & ~0x1)
+        if set_mtime or set_atime:
+            st = p.stat()
+            new_at = at_ts if set_atime else st.st_atime
+            new_mt = mt_ts if set_mtime else st.st_mtime
+            os.utime(p, (new_at, new_mt))
+        if is_win and target_attr is not None:
+            if target_attr == 0:
+                target_attr = 0x80  # FILE_ATTRIBUTE_NORMAL
+            ctypes.windll.kernel32.SetFileAttributesW(str(p), target_attr)
+        elif (not is_win) and "ro" in attr:
+            sv = attr["ro"]
+            if sv != 1:
+                mode = p.stat().st_mode
+                if sv == 2:
+                    mode &= ~(_stat.S_IWUSR | _stat.S_IWGRP | _stat.S_IWOTH)
+                else:
+                    mode |= _stat.S_IWUSR
+                os.chmod(p, mode)
+
+
     def _delete_selected(self):
+        entries = self.selected_entries()
+        if not entries: return
+        names = "\n".join(e.name for e in entries[:10])
         entries = self.selected_entries()
         if not entries: return
         names = "\n".join(e.name for e in entries[:10])

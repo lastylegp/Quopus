@@ -1,4 +1,4 @@
-# date_time: 2026-06-22 19:25
+# date_time: 2026-06-23 10:19
 """Ultimate 64 VIC video streamer for Quopus.
 
 Python port of DusteDdk/u64view (https://github.com/DusteDdk/u64view).
@@ -6779,6 +6779,16 @@ class U64Streamer(QDialog):
         def _row_widget(layout_obj):
             w = QWidget(self)
             w.setLayout(layout_obj)
+            if isinstance(layout_obj, FlowLayout):
+                # heightForWidth so a wrapped toolbar gets enough height,
+                # but PREFERRED vertical policy (not Minimum) so the
+                # window's *minimum* height stays one row - otherwise the
+                # min height balloons to the fully-wrapped height at the
+                # smallest possible width.
+                sp = w.sizePolicy()
+                sp.setHeightForWidth(True)
+                sp.setVerticalPolicy(QSizePolicy.Policy.Preferred)
+                w.setSizePolicy(sp)
             self._chrome_widgets.append(w)
             return w
 
@@ -6789,7 +6799,7 @@ class U64Streamer(QDialog):
         self._chrome_widgets.append(title)
 
         # Toolbar
-        bar = QHBoxLayout()
+        bar = FlowLayout()
         bar.setSpacing(2)
         bar.setContentsMargins(0, 0, 0, 0)
 
@@ -6977,7 +6987,7 @@ class U64Streamer(QDialog):
         # Splits the U64 ReST API features (mount/drives/config/backup/
         # BASIC/Assembly64) into their own row so the streamer doesn't
         # require a 1900px-wide window.
-        bar2 = QHBoxLayout()
+        bar2 = FlowLayout()
         bar2.setSpacing(2)
         bar2.setContentsMargins(0, 0, 0, 0)
 
@@ -7114,7 +7124,7 @@ class U64Streamer(QDialog):
         # equivalents of the C64 function keys so the user doesn't
         # have to fight the OS / window manager over F-key capture.
         # Same effect as Capture-keys + pressing the actual key.
-        fkey_row = QHBoxLayout()
+        fkey_row = FlowLayout()
         fkey_row.setSpacing(2)
         fkey_row.setContentsMargins(0, 0, 0, 2)
         fkey_row.addWidget(QLabel(" Keys: "))
@@ -7193,7 +7203,7 @@ class U64Streamer(QDialog):
         # type line's focus rules for the four commands that come
         # up most often. Each button injects the literal string
         # followed by RETURN into the C64's keyboard buffer.
-        quick_row = QHBoxLayout()
+        quick_row = FlowLayout()
         quick_row.setSpacing(2)
         quick_row.setContentsMargins(0, 0, 0, 2)
         quick_row.addWidget(QLabel(" Quick: "))
