@@ -1,4 +1,4 @@
-# date_time: 2026-06-15 18:21
+# date_time: 2026-06-30 21:46
 """
 Main window layout:
 
@@ -39,6 +39,12 @@ from .dirmodel import DirModel
 from .device_panel import DeviceColumn
 from .actions import ActionDispatcher
 from .dialogs import ButtonConfigDialog
+
+
+class _CopyCancelled(Exception):
+    """Raised from the per-file progress callback to abort a recursive
+    remote->local directory copy when the user clicks Cancel."""
+    pass
 
 
 # MIME type used to identify our own button drags. We embed the
@@ -188,6 +194,18 @@ class QuopusMain(QMainWindow):
             pass
         self.buffers = []
         self.actions = ActionDispatcher(self)
+        # Intercept the "copy" action before it reaches the (encrypted)
+        # dispatcher: copying a *directory* down from a remote/FTP pane
+        # isn't handled there ("Recursive directory download not yet
+        # supported"). We do the recursion ourselves and pass everything
+        # else through unchanged. This covers F5, the button bar and the
+        # menu, since they all funnel through actions.dispatch().
+        _orig_dispatch = self.actions.dispatch
+        def _dispatch_wrapper(key, *a, **k):
+            if key == "copy" and self._maybe_copy_remote_tree():
+                return None
+            return _orig_dispatch(key, *a, **k)
+        self.actions.dispatch = _dispatch_wrapper
         self._active_side = 'left'
 
         self.setWindowTitle(
@@ -1832,6 +1850,103 @@ class QuopusMain(QMainWindow):
         if self._active_side == 'right':
             return self.right_lister, self.left_lister
         return self.left_lister, self.right_lister
+
+    # -- recursive remote -> local directory copy --------------------
+    def _selected_fs_entries(self, lister):
+        """Tagged FsEntry list for a lister, or the current row if none
+        are tagged. Returns [] if nothing is selected."""
+        model = lister.model
+        tagged = set(model.tagged_paths())
+        out = []
+        if tagged:
+            for i in range(model.rowCount()):
+                e = model.entry_at(i)
+                if e and e.path in tagged:
+                    out.append(e)
+        else:
+            idx = lister.view.currentIndex()
+            if idx.isValid():
+                e = model.entry_at(idx.row())
+                if e and e.name not in ("..",):
+                    out.append(e)
+        return out
+
+    def _maybe_copy_remote_tree(self):
+        """If the active pane is remote, the other is local, and the
+        selection contains at least one directory, perform a recursive
+        download here and return True (handled). Otherwise return False
+        so the normal copy dispatch runs."""
+        src, dst = self._active_lister()
+        if getattr(src.fs, 'kind', 'local') != 'remote':
+            return False
+        if getattr(dst.fs, 'kind', 'local') != 'local':
+            return False
+        entries = self._selected_fs_entries(src)
+        if not any(getattr(e, 'is_dir', False) for e in entries):
+            return False        # plain files only -> let dispatcher handle it
+        self._copy_remote_tree(src, dst, entries)
+        return True
+
+    def _copy_remote_tree(self, src, dst, entries):
+        """Download the given remote entries (files and directories,
+        recursively) into the local destination pane's directory, with a
+        modal progress dialog and per-file cancellation."""
+        from pathlib import Path
+        from PyQt6.QtWidgets import (
+            QProgressDialog, QApplication, QMessageBox)
+        from PyQt6.QtCore import Qt as _Qt
+
+        dst_dir = Path(dst.fs.current_path)
+        dlg = QProgressDialog("Preparing download...", "Cancel", 0, 0, self)
+        dlg.setWindowTitle("Transfer - Quopus Commander")
+        dlg.setWindowModality(_Qt.WindowModality.WindowModal)
+        dlg.setMinimumDuration(0)
+        dlg.show()
+        QApplication.processEvents()
+
+        state = {"n": 0}
+
+        def on_file(name):
+            if dlg.wasCanceled():
+                raise _CopyCancelled()
+            state["n"] += 1
+            dlg.setLabelText("Downloading (%d):\n%s" % (state["n"], name))
+            QApplication.processEvents()
+
+        errors = []
+        cancelled = False
+        try:
+            for e in entries:
+                try:
+                    if getattr(e, 'is_dir', False):
+                        src.fs.download_tree(
+                            e.path, dst_dir / e.name, on_file=on_file)
+                    else:
+                        on_file(e.name)
+                        src.fs.download_to(
+                            e.name, str(dst_dir / e.name), size=e.size)
+                except _CopyCancelled:
+                    cancelled = True
+                    break
+                except Exception as ex:
+                    errors.append("%s: %s" % (e.name, ex))
+        finally:
+            dlg.close()
+
+        try: src.model.clear_tags()
+        except Exception: pass
+        try: dst.refresh()
+        except Exception: pass
+
+        if errors:
+            QMessageBox.warning(
+                self, "Transfer",
+                "Copied %d file(s), %d error(s):\n%s" %
+                (state["n"], len(errors), "\n".join(errors[:12])))
+        elif cancelled:
+            QMessageBox.information(
+                self, "Transfer",
+                "Cancelled after %d file(s)." % state["n"])
 
     def _save_path(self, key, path):
         self.config[key] = path

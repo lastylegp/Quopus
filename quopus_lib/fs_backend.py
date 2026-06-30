@@ -1,5 +1,4 @@
-# date_time: 2026-06-30 21:06
-
+# date_time: 2026-06-30 21:46
 """Filesystem abstraction for the lister.
 
 LocalFs wraps pathlib operations, RemoteFs wraps an FtpBackend.
@@ -237,11 +236,89 @@ class RemoteFs:
             try: os.utime(str(local_path), (ts, ts))
             except Exception: pass
 
+    def download_tree(self, remote_dir_path, local_dir, progress=None):
+        """Recursively download a remote directory into local_dir.
+
+        remote_dir_path is the POSIX path of the remote folder (the
+        .path of a directory FsEntry). The local tree is created and
+        mirrored, each file stamped with the server's mtime (via
+        download_to). Returns (n_files, n_dirs). The remote working
+        directory is restored afterwards."""
+        saved = self._cwd
+        try:
+            return self._download_tree_rec(
+                remote_dir_path, Path(local_dir), progress)
+        finally:
+            try: self.cd(saved)
+            except Exception: pass
+
+    def _download_tree_rec(self, remote_dir_path, local_dir, progress):
+        os.makedirs(local_dir, exist_ok=True)
+        # cd refreshes _mtime_cache (via list) for this level so the
+        # per-file date stamping in download_to has fresh data.
+        self.cd(remote_dir_path)
+        entries = self.list()
+        files = [e for e in entries if not e.is_dir]
+        dirs = [e for e in entries if e.is_dir]
+        n_files = 0
+        n_dirs = 1
+        # Download this level's files first - cwd is the level dir and
+        # the mtime cache is current. Recursing into sub-dirs only
+        # afterwards keeps cwd correct for these basenames.
+        for e in files:
+            self.download_to(e.name, str(local_dir / e.name),
+                             progress=progress, size=e.size)
+            n_files += 1
+        # Each recursion cd's by absolute path, so cwd drift is fine.
+        for e in dirs:
+            nf, nd = self._download_tree_rec(
+                e.path, local_dir / e.name, progress)
+            n_files += nf
+            n_dirs += nd
+        return n_files, n_dirs
+
     def upload_from(self, local_path, remote_name=None, progress=None):
         """Upload a local file to the current remote directory."""
         if remote_name is None:
             remote_name = Path(local_path).name
         self.backend.upload(str(local_path), remote_name, progress=progress)
+
+    def download_tree(self, remote_dir, local_dir, on_file=None):
+        """Recursively download a remote directory into local_dir.
+
+        remote_dir is an absolute POSIX path on the server; local_dir is
+        the local destination (Path/str), created if missing. on_file, if
+        given, is called with each file's name just before it downloads
+        (for progress / cancellation - raise from it to abort). The remote
+        working directory is restored afterwards so the pane stays put."""
+        saved = self._cwd
+        try:
+            self._download_tree_inner(remote_dir, Path(local_dir), on_file)
+        finally:
+            try: self.cd(saved)
+            except Exception: pass
+
+    def _download_tree_inner(self, remote_dir, local_dir, on_file):
+        local_dir.mkdir(parents=True, exist_ok=True)
+        self.cd(remote_dir)
+        entries = self.list()          # snapshot before recursion clobbers state
+        for e in entries:
+            if e.is_dir:
+                self._download_tree_inner(e.path, local_dir / e.name, on_file)
+                self.cd(remote_dir)    # recursion moved cwd - restore for siblings
+            else:
+                if on_file is not None:
+                    on_file(e.name)
+                local_file = local_dir / e.name
+                # Download directly via the backend and stamp the date
+                # from this directory's snapshot. We don't go through
+                # download_to here because its name->mtime cache gets
+                # overwritten by the listing of any sub-directory, which
+                # would mis-date files that follow a sub-folder.
+                self.backend.download(e.name, str(local_file), size=e.size)
+                if e.mtime is not None:
+                    try: os.utime(str(local_file), (e.mtime, e.mtime))
+                    except Exception: pass
 
     def write_bytes(self, name, data, target_dir=None):
         """Write in-memory bytes to remote. Goes via temp file."""
