@@ -1,3 +1,5 @@
+# date_time: 2026-06-30 21:06
+
 """Filesystem abstraction for the lister.
 
 LocalFs wraps pathlib operations, RemoteFs wraps an FtpBackend.
@@ -131,6 +133,9 @@ class RemoteFs:
     def __init__(self, backend, connection_label):
         self.backend = backend          # FtpBackend instance, already connected
         self.label = connection_label   # for display_path prefix
+        # name -> datetime cache from the most recent list(); used to
+        # stamp downloaded files with the server's modification date.
+        self._mtime_cache: dict = {}
         try:
             self._cwd = self.backend.pwd()
         except Exception:
@@ -154,10 +159,14 @@ class RemoteFs:
 
     def list(self):
         out = []
+        self._mtime_cache = {}
         for re in self.backend.list_dir():
             # Build POSIX-style remote path
             full = str(PurePosixPath(self._cwd) / re.name)
             mtime = re.mtime.timestamp() if re.mtime else None
+            # Remember the raw datetime so download_to can apply the
+            # server's modification date to the local copy.
+            self._mtime_cache[re.name] = re.mtime
             out.append(FsEntry(
                 name=re.name,
                 path=full,
@@ -199,6 +208,34 @@ class RemoteFs:
         """Save remote file directly to disk (avoids memory copy for large files)."""
         self.backend.download(remote_name, str(local_path),
                               progress=progress, size=size)
+        self._apply_remote_mtime(remote_name, local_path)
+
+    def _apply_remote_mtime(self, remote_name, local_path):
+        """Stamp the freshly downloaded local file with the server's
+        modification date, mirrored 1:1. Source order: the datetime
+        cached from the last list() (matches what the pane shows),
+        then an MDTM query as fallback. Whatever the server reports is
+        applied verbatim - including epoch-0 / 1970 dates that some
+        devices (e.g. the U64) store for files without an RTC stamp.
+        Only a genuinely missing date (None) leaves the copy time."""
+        name = PurePosixPath(remote_name).name
+        ts = None
+        m = self._mtime_cache.get(name)
+        if m is not None:
+            try: ts = m.timestamp()
+            except Exception: ts = None
+        if ts is None:
+            fn = getattr(self.backend, "_remote_mtime", None)
+            if callable(fn):
+                try:
+                    v = fn(name)
+                    if v is not None:
+                        ts = float(v)
+                except Exception:
+                    ts = None
+        if ts is not None:
+            try: os.utime(str(local_path), (ts, ts))
+            except Exception: pass
 
     def upload_from(self, local_path, remote_name=None, progress=None):
         """Upload a local file to the current remote directory."""
