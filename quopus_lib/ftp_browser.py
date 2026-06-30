@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import tempfile
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -680,18 +680,20 @@ class _TransferThread(QThread):
     finished_ok = pyqtSignal(str)
     finished_error = pyqtSignal(str)
 
-    def __init__(self, backend, direction, remote_name, local_path):
+    def __init__(self, backend, direction, remote_name, local_path, mtime=None):
         super().__init__()
         self.backend = backend
         self.direction = direction  # 'download' or 'upload'
         self.remote_name = remote_name
         self.local_path = local_path
+        self.mtime = mtime
 
     def run(self):
         try:
             if self.direction == 'download':
                 self.backend.download(self.remote_name, self.local_path,
-                                      progress=self.progress.emit)
+                                      progress=self.progress.emit,
+                                      mtime=self.mtime)
             else:
                 self.backend.upload(self.local_path, self.remote_name,
                                     progress=self.progress.emit)
@@ -893,16 +895,63 @@ class FtpBrowserDialog(QDialog):
 
     def _download(self):
         items = self._selected_entries()
-        files = [e for e in items if not e.is_dir]
-        if not files:
+        if not items:
             self.lbl_status.setText(" Nothing selected to download ")
             return
         outdir = QFileDialog.getExistingDirectory(
             self, "Download to...", str(self.local_default_dir))
         if not outdir: return
         self.local_default_dir = Path(outdir)
-        self._run_transfers(
-            [(f.name, str(Path(outdir) / f.name), 'download') for f in files])
+
+        jobs = []
+        if any(e.is_dir for e in items):
+            # Recursive folder download. Listing sub-directories changes the
+            # remote cwd, so remember where we are and restore afterwards.
+            from PyQt6.QtWidgets import QApplication
+            try:
+                base_pwd = self.backend.pwd()
+            except Exception:
+                base_pwd = "."
+            self.lbl_status.setText(" Scanning folders... ")
+            QApplication.processEvents()
+            try:
+                for e in items:
+                    if e.is_dir:
+                        remote_dir = str(PurePosixPath(base_pwd) / e.name)
+                        self._gather_dir(remote_dir, Path(outdir) / e.name, jobs)
+                    else:
+                        jobs.append((e.name, str(Path(outdir) / e.name),
+                                     'download', e.mtime))
+            except Exception as ex:
+                QMessageBox.warning(self, "Download", f"Scan failed: {ex}")
+                try: self.backend.cwd(base_pwd)
+                except Exception: pass
+                return
+            # Restore the remote working directory before transferring.
+            try: self.backend.cwd(base_pwd)
+            except Exception: pass
+        else:
+            jobs = [(f.name, str(Path(outdir) / f.name), 'download', f.mtime)
+                    for f in items]
+
+        if not jobs:
+            self.lbl_status.setText(" Nothing to download ")
+            return
+        self._run_transfers(jobs)
+
+    def _gather_dir(self, remote_dir, local_dir, jobs):
+        """Recursively collect download jobs under a remote directory and
+        create the matching local directory tree. Note: this changes the
+        backend's remote cwd; the caller restores it afterwards."""
+        os.makedirs(local_dir, exist_ok=True)
+        for e in self.backend.list_dir(remote_dir):
+            child_remote = str(PurePosixPath(remote_dir) / e.name)
+            child_local = local_dir / e.name
+            if e.is_dir:
+                self._gather_dir(child_remote, child_local, jobs)
+            else:
+                jobs.append((child_remote, str(child_local),
+                             'download', e.mtime))
 
     def _upload(self):
         paths, _ = QFileDialog.getOpenFileNames(
@@ -910,7 +959,7 @@ class FtpBrowserDialog(QDialog):
         if not paths: return
         self.local_default_dir = Path(paths[0]).parent
         self._run_transfers(
-            [(os.path.basename(p), p, 'upload') for p in paths])
+            [(os.path.basename(p), p, 'upload', None) for p in paths])
 
     def _run_transfers(self, jobs):
         """Run a list of (remote_name, local_path, direction) serially."""
@@ -928,11 +977,12 @@ class FtpBrowserDialog(QDialog):
                 f" {self._job_count_total} transfer(s) complete ")
             self._refresh()
             return
-        remote, local, direction = self._jobs[self._job_index]
+        remote, local, direction, mtime = self._jobs[self._job_index]
         self.lbl_status.setText(
             f" {direction.title()} [{self._job_index+1}/{self._job_count_total}]: "
             f"{remote} ")
-        self._thread = _TransferThread(self.backend, direction, remote, local)
+        self._thread = _TransferThread(self.backend, direction, remote, local,
+                                       mtime)
         self._thread.progress.connect(self._on_progress)
         self._thread.finished_ok.connect(self._on_job_done)
         self._thread.finished_error.connect(self._on_job_error)

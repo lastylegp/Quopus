@@ -147,6 +147,12 @@ class TgDialog:
     is_group: bool
     is_channel: bool
     unread: int
+    # Presence (users only). status_kind is one of:
+    #   'online'|'offline'|'recently'|'week'|'month'|'longago'|''
+    # last_seen is the POSIX time of last activity for 'offline',
+    # otherwise 0.0. Groups/channels leave both at the defaults.
+    status_kind: str = ""
+    last_seen: float = 0.0
 
 
 def _img_mime(data: bytes) -> str:
@@ -204,6 +210,8 @@ class _TgWorker(QObject):
     sig_new_message = pyqtSignal(object)      # TgMessage (live update)
     sig_sent = pyqtSignal('qlonglong')        # chat_id (message sent ok)
     sig_download_done = pyqtSignal(str, bool)  # filepath, open_after
+    sig_user_status = pyqtSignal('qlonglong', str, float)
+    # ^ user_id, status_kind, last_seen_epoch  (live presence update)
     sig_upload_done = pyqtSignal('qlonglong', str)  # chat_id, filename
     sig_saved_media = pyqtSignal(str, list)   # kind ('gif'/'sticker'), items
 
@@ -366,6 +374,35 @@ class _TgWorker(QObject):
         uname = getattr(entity, "username", None)
         return uname or str(getattr(entity, "id", "?"))
 
+    @staticmethod
+    def _status_kind(st):
+        """Map a Telethon UserStatus* object to (kind, last_seen_epoch).
+        kind: 'online'|'offline'|'recently'|'week'|'month'|'longago'|''.
+        last_seen_epoch is set only for 'offline' (the was_online time),
+        0.0 otherwise. Compared by class name so no Telethon import is
+        needed and unknown/None statuses degrade to ('', 0.0)."""
+        if st is None:
+            return ("", 0.0)
+        cls = type(st).__name__
+        if cls == "UserStatusOnline":
+            return ("online", 0.0)
+        if cls == "UserStatusOffline":
+            wo = getattr(st, "was_online", None)
+            try:
+                ts = wo.timestamp() if wo else 0.0
+            except Exception:
+                ts = 0.0
+            return ("offline", ts)
+        if cls == "UserStatusRecently":
+            return ("recently", 0.0)
+        if cls == "UserStatusLastWeek":
+            return ("week", 0.0)
+        if cls == "UserStatusLastMonth":
+            return ("month", 0.0)
+        if cls == "UserStatusEmpty":
+            return ("longago", 0.0)
+        return ("", 0.0)
+
     # -- dialogs / messages --------------------------------------
     def fetch_dialogs(self, limit: int = 100):
         self._submit(self._fetch_dialogs(limit))
@@ -382,6 +419,8 @@ class _TgWorker(QObject):
                     self._entities[d.id] = ent
                 except Exception:
                     pass
+                kind, last_seen = (self._status_kind(getattr(ent, "status", None))
+                                   if d.is_user else ("", 0.0))
                 out.append(TgDialog(
                     id=d.id,
                     name=self._display_name_of(ent) or d.name or "?",
@@ -389,6 +428,8 @@ class _TgWorker(QObject):
                     is_group=bool(d.is_group),
                     is_channel=bool(d.is_channel),
                     unread=int(getattr(d, "unread_count", 0) or 0),
+                    status_kind=kind,
+                    last_seen=last_seen,
                 ))
             self.sig_dialogs.emit(out)
         except Exception as e:
@@ -553,6 +594,17 @@ class _TgWorker(QObject):
             _log("RAW update: %s" % cls)
         except Exception:
             pass
+        if cls == "UpdateUserStatus":
+            # Live presence change for a user we may have in the list.
+            try:
+                uid = int(getattr(update, "user_id", 0) or 0)
+                kind, last_seen = self._status_kind(
+                    getattr(update, "status", None))
+                if uid:
+                    self.sig_user_status.emit(uid, kind, last_seen)
+            except Exception:
+                pass
+            return
         if cls not in ("UpdateNewMessage", "UpdateNewChannelMessage",
                        "UpdateShortMessage", "UpdateShortChatMessage"):
             return
@@ -1484,6 +1536,7 @@ class TelegramDialog(QDialog):
         w.sig_dialogs.connect(self._on_dialogs)
         w.sig_messages.connect(self._on_messages)
         w.sig_new_message.connect(self._on_new_message)
+        w.sig_user_status.connect(self._on_user_status)
         w.sig_sent.connect(self._on_sent)
         w.sig_download_done.connect(self._on_download_done)
         w.sig_upload_done.connect(self._on_upload_done)
@@ -1566,6 +1619,12 @@ class TelegramDialog(QDialog):
         self._dialogs = dialogs
         self._dialogs_refreshing = False
         self._refresh_chat_list()
+        # Keep the open chat's header presence fresh after a poll.
+        cur = getattr(self, "_current_chat", None)
+        if cur is not None:
+            d = next((x for x in self._dialogs if x.id == cur), None)
+            if d is not None and d.is_user:
+                self.lbl_chat.setText(self._chat_header(d))
 
     def _refresh_chat_list(self):
         """Rebuild the visible chat list from self._dialogs,
@@ -1590,8 +1649,13 @@ class TelegramDialog(QDialog):
             label = f"{tag} {d.name}"
             if d.unread:
                 label += f"  ({d.unread})"
+            status_short = self._status_short(d) if d.is_user else ""
+            if status_short:
+                label += "   " + status_short
             item = QListWidgetItem(label)
             item.setData(Qt.ItemDataRole.UserRole, d.id)
+            if d.is_user and d.status_kind == "online":
+                item.setForeground(Qt.GlobalColor.darkGreen)
             self.list_chats.addItem(item)
         # Keep the currently open chat highlighted after a rebuild
         # (it may have just bubbled to the top).
@@ -1609,6 +1673,89 @@ class TelegramDialog(QDialog):
         else:
             self._set_status("%d chats (+%d archived)" %
                              (n_active, n_archived))
+
+    # -- presence (online status / last seen) ---------------------
+    def _fmt_last_seen(self, epoch: float, short: bool = False) -> str:
+        """Format an offline 'was online' time in Europe/Berlin.
+        short=True yields a compact list form (HH:MM today, dd.mm HH:MM
+        this year, else dd.mm.yy); long form is YYYY-MM-DD HH:MM."""
+        if not epoch:
+            return "?"
+        from datetime import datetime
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo("Europe/Berlin")
+            dt = datetime.fromtimestamp(epoch, tz)
+            now = datetime.now(tz)
+        except Exception:
+            dt = datetime.fromtimestamp(epoch)
+            now = datetime.now()
+        if short:
+            if dt.date() == now.date():
+                return dt.strftime("%H:%M")
+            if dt.year == now.year:
+                return dt.strftime("%d.%m %H:%M")
+            return dt.strftime("%d.%m.%y")
+        return dt.strftime("%Y-%m-%d %H:%M")
+
+    def _status_short(self, d: TgDialog) -> str:
+        """Compact presence text for the chat list."""
+        k = d.status_kind
+        if k == "online":
+            return "online"
+        if k == "recently":
+            return "recently"
+        if k == "week":
+            return "last wk"
+        if k == "month":
+            return "last mo"
+        if k == "offline":
+            return "seen " + self._fmt_last_seen(d.last_seen, short=True)
+        return ""   # longago / unknown: don't clutter the list
+
+    def _status_long(self, d: TgDialog) -> str:
+        """Full presence text for the chat header."""
+        k = d.status_kind
+        if k == "online":
+            return "online"
+        if k == "recently":
+            return "last seen recently"
+        if k == "week":
+            return "last seen within a week"
+        if k == "month":
+            return "last seen within a month"
+        if k == "offline":
+            return "last seen " + self._fmt_last_seen(d.last_seen)
+        if k == "longago":
+            return "last seen a long time ago"
+        return ""
+
+    def _chat_header(self, d: TgDialog) -> str:
+        """Header label for the open chat: name + presence for users."""
+        tag = ("@" if d.is_user else
+               "#" if d.is_channel else
+               "*" if d.is_group else " ")
+        h = f"{tag} {d.name}"
+        if d.is_user:
+            s = self._status_long(d)
+            if s:
+                h += "   -   " + s
+        return h
+
+    def _on_user_status(self, uid: int, kind: str, last_seen: float):
+        """Live presence update for a single user (UpdateUserStatus)."""
+        target = None
+        for d in self._dialogs:
+            if d.is_user and d.id == uid:
+                d.status_kind = kind
+                d.last_seen = last_seen
+                target = d
+                break
+        if target is None:
+            return
+        self._refresh_chat_list()
+        if uid == getattr(self, "_current_chat", None):
+            self.lbl_chat.setText(self._chat_header(target))
 
     def _switch_archive_view(self, show_archive: bool):
         self._show_archive = show_archive
@@ -1661,7 +1808,8 @@ class TelegramDialog(QDialog):
                     break
             QTimer.singleShot(0, self._refresh_chat_list)
         _log("chat selected: %r (id=%r)" % (item.text(), chat_id))
-        self.lbl_chat.setText(item.text())
+        d = next((x for x in self._dialogs if x.id == chat_id), None)
+        self.lbl_chat.setText(self._chat_header(d) if d else item.text())
         self._set_compose_enabled(True)
         self._loading_older = False
         # Render cached messages immediately (so re-opening a chat

@@ -17,7 +17,7 @@ import os
 import socket
 import ssl
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Callable
 
@@ -159,18 +159,44 @@ class FtpBackendStd(FtpBackend):
         is_dir = perms.startswith("d") or perms.startswith("l")
         return RemoteEntry(name=name, size=size, mtime=mtime, is_dir=is_dir)
 
-    def download(self, remote_name, local_path, progress=None, size=None):
-        # If caller didn't pass the expected size, try to query it.
-        # SIZE command only works in binary (TYPE I) mode on most servers.
-        if size is None or size <= 0:
-            size = self._size_safe(remote_name)
-        with open(local_path, "wb") as f:
-            done = [0]
-            def cb(chunk):
-                f.write(chunk)
-                done[0] += len(chunk)
-                if progress: progress(done[0], size or 0)
-            self.ftp.retrbinary(f"RETR {remote_name}", cb)
+    def download(self, remote_name, local_path, progress=None, size=None,
+                 mtime=None):
+        # Support sub-directory paths (recursive folder downloads):
+        # cd into the directory and fetch by basename, then restore cwd.
+        saved_cwd = None
+        if "/" in remote_name.strip("/"):
+            saved_cwd = self.ftp.pwd()
+            d, _, base = remote_name.rpartition("/")
+            self.ftp.cwd(d or "/")
+            remote_name = base
+        try:
+            # If caller didn't pass the expected size, try to query it.
+            # SIZE command only works in binary (TYPE I) mode on most servers.
+            if size is None or size <= 0:
+                size = self._size_safe(remote_name)
+            with open(local_path, "wb") as f:
+                done = [0]
+                def cb(chunk):
+                    f.write(chunk)
+                    done[0] += len(chunk)
+                    if progress: progress(done[0], size or 0)
+                self.ftp.retrbinary(f"RETR {remote_name}", cb)
+            # Preserve the server's modification date on the local file.
+            # Prefer the timestamp from the directory listing (matches what
+            # the browser shows); fall back to an MDTM query.
+            ts = None
+            if mtime is not None:
+                try: ts = mtime.timestamp()
+                except Exception: ts = None
+            if ts is None:
+                ts = self._remote_mtime(remote_name)
+            if ts is not None:
+                try: os.utime(local_path, (ts, ts))
+                except Exception: pass
+        finally:
+            if saved_cwd is not None:
+                try: self.ftp.cwd(saved_cwd)
+                except Exception: pass
 
     def upload(self, local_path, remote_name, progress=None):
         size = os.path.getsize(local_path)
@@ -209,6 +235,22 @@ class FtpBackendStd(FtpBackend):
             return self.ftp.size(name) or 0
         except Exception:
             return 0
+
+    def _remote_mtime(self, name):
+        """Query the server modification time via MDTM (RFC 3659).
+        Returns POSIX timestamp (seconds, UTC) or None if unsupported."""
+        try:
+            resp = self.ftp.sendcmd(f"MDTM {name}")
+        except Exception:
+            return None
+        parts = resp.split()
+        if len(parts) < 2 or not parts[1][:14].isdigit():
+            return None
+        try:
+            dt = datetime.strptime(parts[1][:14], "%Y%m%d%H%M%S")
+            return dt.replace(tzinfo=timezone.utc).timestamp()
+        except Exception:
+            return None
 
 
 class FtpBackendImplicitTls(FtpBackendStd):
@@ -293,12 +335,24 @@ class FtpBackendSftp(FtpBackend):
                 mtime=mtime, is_dir=is_dir))
         return out
 
-    def download(self, remote_name, local_path, progress=None, size=None):
+    def download(self, remote_name, local_path, progress=None, size=None,
+                 mtime=None):
         path = remote_name if remote_name.startswith("/") \
                else str(PurePosixPath(self._cwd) / remote_name)
         def cb(done, total):
             if progress: progress(done, total)
         self.sftp.get(path, str(local_path), callback=cb)
+        # Preserve the server's modification date on the local file.
+        ts = None
+        if mtime is not None:
+            try: ts = mtime.timestamp()
+            except Exception: ts = None
+        if ts is None:
+            try: ts = self.sftp.stat(path).st_mtime
+            except Exception: ts = None
+        if ts is not None:
+            try: os.utime(str(local_path), (ts, ts))
+            except Exception: pass
 
     def upload(self, local_path, remote_name, progress=None):
         path = remote_name if remote_name.startswith("/") \
